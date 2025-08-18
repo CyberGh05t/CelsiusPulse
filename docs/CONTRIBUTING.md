@@ -19,7 +19,7 @@
 
 3. **Настройте upstream**
    ```bash
-   git remote add upstream https://github.com/original/CelsiusPulse.git
+   git remote add upstream https://github.com/yourusername/CelsiusPulse.git
    ```
 
 4. **Создайте ветку для изменений**
@@ -33,15 +33,14 @@
 
 ```bash
 # Создайте виртуальное окружение
-make setup
-
-# Или вручную
 python -m venv venv
 source venv/bin/activate  # Linux/Mac
+# или venv\Scripts\activate для Windows
 venv\Scripts\activate      # Windows
 
 # Установите зависимости
-make dev
+pip install -r requirements.txt
+pip install -e ".[dev]"  # Для dev-зависимостей из pyproject.toml
 ```
 
 ### 2. Внесение изменений
