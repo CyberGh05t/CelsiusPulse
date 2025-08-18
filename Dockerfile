@@ -54,9 +54,11 @@ COPY --from=builder --chown=celsiuspulse:celsiuspulse /opt/venv /opt/venv
 # Copy application code
 COPY --chown=celsiuspulse:celsiuspulse . .
 
-# Ensure data directory has correct permissions
-RUN chmod 750 /app/data && \
-    chmod 750 /app/data/logs
+# Set correct permissions for data directory and .env (999:999)
+RUN chown -R 999:999 /app/data && \
+    chown 999:999 /app/.env* 2>/dev/null || true && \
+    chmod 775 /app/data && \
+    chmod 775 /app/data/logs
 
 # Switch to non-root user
 USER celsiuspulse
@@ -64,9 +66,6 @@ USER celsiuspulse
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
     CMD python -c "import sys; sys.exit(0)" || exit 1
-
-# Expose port (if using webhook)
-EXPOSE 8080
 
 # Run the application
 CMD ["python", "main.py"]

@@ -209,3 +209,7 @@ bot_credentials.json
 # Monitoring data
 metrics/
 monitoring_data/
+
+# Claude Code addon
+CLAUDE.md
+.claude

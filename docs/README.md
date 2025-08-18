@@ -31,7 +31,7 @@
 
 1. **Клонируйте репозиторий**
 ```bash
-git clone https://github.com/yourusername/CelsiusPulse.git
+git clone https://github.com/CyberGh05t/CelsiusPulse.git
 cd CelsiusPulse
 ```
 
@@ -87,7 +87,7 @@ Project CelsiusPulse/TempMonitor/
 ├── requirements.txt         # Python зависимости
 ├── pyproject.toml          # Конфигурация проекта
 # pytest.ini удален (настройки в pyproject.toml)
-├── CLAUDE.md               # Инструкции для Claude Code
+├── docs/                   # Документация проекта
 ├── src/                    # Исходный код (модульная архитектура)
 │   ├── config/             # Конфигурация
 │   ├── core/               # Бизнес-логика
@@ -199,27 +199,64 @@ flake8 .
 black .
 ```
 
-### Работа с Claude Code
+### Работа с IDE
 
-Для работы с Claude Code в VSCode:
+Рекомендуемая настройка для разработки:
 
-1. Установите расширение Claude Code
-2. Откройте проект в VSCode
-3. Используйте команду `Claude: Start Session`
-4. Следуйте инструкциям в файле `CLAUDE.md`
+1. Используйте VSCode или PyCharm
+2. Установите Python расширения
+3. Настройте виртуальное окружение
+4. Используйте встроенные инструменты для отладки и тестирования
 
 ## 🐳 Docker
 
-### Запуск через Docker Compose
+### Интеграция в существующий IoT Stack
 
-```bash
-docker-compose up -d
+Для развертывания в составе существующего IoT стека (с Mosquitto, InfluxDB, Node-RED):
+
+1. **Добавить сервис в docker-compose.yml:**
+
+```yaml
+  celsiuspulse-bot:
+    build:
+      context: ./CelsiusPulse/
+      dockerfile: Dockerfile
+    container_name: celsiuspulse-bot
+    restart: unless-stopped
+    environment:
+      - TZ=Europe/Moscow
+    env_file:
+      - ./CelsiusPulse/.env
+    volumes:
+      - ./CelsiusPulse/data:/app/data:rw
+      - ./CelsiusPulse/.env:/app/.env:rw
+      - ./CelsiusPulse/src:/app/src:ro
+      - ./CelsiusPulse/main.py:/app/main.py:ro
+    networks:
+      - iot-network
 ```
 
-### Сборка образа
+2. **Настроить права доступа:**
+```bash
+sudo chown -R 999:999 /path/to/CelsiusPulse/data/
+sudo chown -R 999:999 /path/to/CelsiusPulse/.env
+sudo chmod -R 775 /path/to/CelsiusPulse/data/
+```
+
+3. **Запуск:**
+```bash
+docker-compose up -d celsiuspulse-bot
+```
+
+### Автономное развертывание
 
 ```bash
-docker build -t celsiuspulse:latest .
+# Клонировать репозиторий
+git clone https://github.com/CyberGh05t/CelsiusPulse.git
+cd CelsiusPulse
+
+# Использовать встроенную конфигурацию
+docker-compose -f config/docker/docker-compose.yml up -d
 ```
 
 ## 📊 Мониторинг и логи

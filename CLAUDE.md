@@ -155,11 +155,12 @@ cp .env.example .env.test
 ### Основные проверки
 - [ ] All tests passing
 - [ ] Environment variables configured
-- [ ] Logs directory exists with write permissions
+- [ ] Data directory permissions (999:999 for volumes)
 - [ ] Backup strategy in place
 - [ ] Monitoring endpoints configured
 - [ ] Rate limiting enabled
 - [ ] SSL certificates valid (for webhooks)
+- [ ] Docker network (iot-network) configured
 
 ### Критические проверки безопасности
 - [ ] **Bandit security scan** - нет критических уязвимостей
@@ -274,6 +275,8 @@ def secure_log(message: str, sensitive_data: dict = None):
 - [ ] Убедиться в корректной валидации всех входных данных
 - [ ] Проверить логи на предмет утечки чувствительной информации
 - [ ] Обновить все зависимости до последних безопасных версий
+- [ ] Проверить права доступа к volume mount'ам (999:999)
+- [ ] Убедиться в корректной работе сети iot-network
 
 ### Инциденты безопасности
 
@@ -355,7 +358,52 @@ For architectural decisions or major changes, consult with the team lead before 
 6. Implement data archiving strategy
 7. Add predictive alerts using ML
 
-Remember: Maintain backward compatibility and test thoroughly before deploying any changes! Все комментарии, инструкции и документации пиши на русском языке. Разговаривай с пользователем по русски. Всегда держи в памяти полную структуру проекта!
+Remember: Maintain backward compatibility and test thoroughly before deploying any changes! Все комментарии, инструкции и документации пиши на русском языке. Разговаривай с пользователем по русски.
+
+## Docker Deployment
+
+### Интеграция в существующий IoT stack
+
+1. **Добавить в docker-compose.yml существующего IoT stack'а:**
+
+```yaml
+  celsiuspulse-bot:
+    build:
+      context: ./CelsiusPulse/
+      dockerfile: Dockerfile
+    container_name: celsiuspulse-bot
+    restart: unless-stopped
+    environment:
+      - TZ=Europe/Moscow
+    env_file:
+      - ./CelsiusPulse/.env
+    volumes:
+      - ./CelsiusPulse/data:/app/data:rw
+      - ./CelsiusPulse/.env:/app/.env:rw
+      - ./CelsiusPulse/src:/app/src:ro
+      - ./CelsiusPulse/main.py:/app/main.py:ro
+    networks:
+      - iot-network
+```
+
+2. **Настроить права доступа:**
+```bash
+sudo chown -R 999:999 /path/to/CelsiusPulse/data/
+sudo chown -R 999:999 /path/to/CelsiusPulse/.env
+sudo chmod -R 775 /path/to/CelsiusPulse/data/
+```
+
+3. **Запустить:**
+```bash
+docker-compose up -d celsiuspulse-bot
+```
+
+### Важные моменты деплоя
+
+- Контейнер должен работать в сети `iot-network` с подсетью `172.20.0.0/16`
+- Пользователь в контейнере имеет UID 1000, права доступа 999:999 для volume'ов
+- .env файл монтируется как read-write для возможности изменений
+- Исходный код монтируется как read-only для безопасности Всегда держи в памяти полную структуру проекта!
 
 ## Code Review Reference
 

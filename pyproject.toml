@@ -8,7 +8,7 @@ readme = "README.md"
 homepage = "https://github.com/yourusername/CelsiusPulse"
 repository = "https://github.com/yourusername/CelsiusPulse"
 documentation = "https://celsiuspulse.readthedocs.io"
-keywords = ["telegram", "bot", "monitoring", "temperature", "warehouse", "alerts"]
+keywords = ["telegram", "bot", "monitoring", "temperature", "warehouse", "alerts", "docker", "iot"]
 classifiers = [
     "Development Status :: 5 - Production/Stable",
     "Intended Audience :: System Administrators",
