@@ -1,0 +1,211 @@
+# ===========================================================
+# CelsiusPulse Temperature Monitoring Bot - .gitignore
+# ===========================================================
+
+# Environment files (CRITICAL - contain secrets)
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+.venv/
+
+# PyCharm
+.idea/
+
+# VSCode
+.vscode/
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# pyenv
+.python-version
+
+# pipenv
+Pipfile.lock
+
+# Poetry
+poetry.lock
+
+# ===========================================================
+# Application Data (SENSITIVE)
+# ===========================================================
+
+# JSON data files containing sensitive information
+data/*.json
+data/*.json.*
+data/*.backup
+!data/admins.json.example
+!data/thresholds.json.example
+
+# Logs directory
+data/logs/
+logs/
+*.log
+*.log.*
+
+# Backup files
+BackUp/
+*.backup
+*.bak
+*.old
+
+# ===========================================================
+# Testing & Development
+# ===========================================================
+
+# pytest
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Coverage reports
+htmlcov/
+.coverage.*
+coverage.xml
+
+# Unit test / coverage reports
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+
+# ===========================================================
+# Security & Monitoring
+# ===========================================================
+
+# Security scan reports
+security_report.json
+safety_report.json
+audit_report.json
+bandit_report.json
+
+# Secrets baseline for detect-secrets
+.secrets.baseline
+
+# ===========================================================
+# Docker & Deployment
+# ===========================================================
+
+# Docker volumes
+volumes/
+docker-volumes/
+
+# Compose override files
+docker-compose.override.yml
+docker-compose.local.yml
+
+# Container logs
+containers/
+
+# ===========================================================
+# Documentation & Build
+# ===========================================================
+
+# Sphinx documentation
+docs/_build/
+docs/.doctrees/
+
+# ===========================================================
+# OS & Editor files
+# ===========================================================
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Linux
+*~
+
+# Temporary files
+*.tmp
+*.temp
+*.swp
+*.swo
+*~
+
+# ===========================================================
+# Project Specific
+# ===========================================================
+
+# Screenshots and media (if sensitive)
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.webp
+!docs/assets/*
+!docs/images/*
+
+# VBS scripts for Windows startup
+*.vbs
+
+# Archive files
+*.zip
+*.tar.gz
+*.rar
+
+# Configuration backups
+*.conf.backup
+*.config.backup
+
+# Telegram bot specific
+telegram_bot_token.txt
+bot_credentials.json
+
+# Monitoring data
+metrics/
+monitoring_data/
