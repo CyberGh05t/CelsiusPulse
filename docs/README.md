@@ -82,7 +82,7 @@ python main.py
 ## 📁 Структура проекта
 
 ```
-Project CelsiusPulse/TempMonitor/
+Project CelsiusPulse/CelsiusPulse/
 ├── main.py                  # Точка входа приложения
 ├── requirements.txt         # Python зависимости
 ├── pyproject.toml          # Конфигурация проекта
