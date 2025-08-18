@@ -67,9 +67,9 @@ python main.py
 |------------|----------|--------|
 | `TELEGRAM_BOT_TOKEN` | Токен вашего Telegram бота | `123456:ABC-DEF1234...` |
 | `DOGET_URL` | URL для получения данных датчиков | `https://script.google.com/...` |
-| `DEBUG` | Режим отладки | `false` |
-| `MONITOR_INTERVAL` | Интервал мониторинга (сек) | `60` |
-| `ALERT_COOLDOWN` | Таймаут между алертами (сек) | `1800` |
+| `DEBUG_MODE` | Режим отладки | `false` |
+| `MONITORING_INTERVAL` | Интервал мониторинга (сек) | `300` |
+| `ALERT_COOLDOWN_SECONDS` | Таймаут между алертами (сек) | `3600` |
 
 ### Группы пользователей
 

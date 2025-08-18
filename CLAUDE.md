@@ -355,7 +355,7 @@ For architectural decisions or major changes, consult with the team lead before 
 6. Implement data archiving strategy
 7. Add predictive alerts using ML
 
-Remember: Maintain backward compatibility and test thoroughly before deploying any changes! Все комментарии, инструкции и документации пиши на русском языке. Разговаривай с пользователем по русски.
+Remember: Maintain backward compatibility and test thoroughly before deploying any changes! Все комментарии, инструкции и документации пиши на русском языке. Разговаривай с пользователем по русски. Всегда держи в памяти полную структуру проекта!
 
 ## Code Review Reference
 

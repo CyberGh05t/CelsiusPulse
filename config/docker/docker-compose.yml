@@ -12,7 +12,6 @@ services:
     volumes:
       # Persistent data
       - ../../data:/app/data
-      - ../../data/logs:/app/logs
     networks:
       - celsiuspulse-network
     healthcheck:
@@ -126,9 +125,9 @@ services:
 #     depends_on:
 #       - celsiuspulse
 
-# networks:
-#   celsiuspulse-network:
-#     driver: bridge
+networks:
+  celsiuspulse-network:
+    driver: bridge
 
 # volumes:
 #   redis-data:
