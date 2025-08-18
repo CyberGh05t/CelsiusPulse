@@ -1,1 +1,0 @@
-# Тесты для CelsiusPulse бота
