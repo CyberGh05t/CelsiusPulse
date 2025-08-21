@@ -4,81 +4,47 @@
 import re
 from telegram import Update
 from telegram.ext import ContextTypes
-from ...config.logging import SecureLogger
-from ...core.auth import get_user_role, add_user_to_group, update_env_file
-from ...core.storage import AdminManager
-from ...core.monitoring import get_all_groups
-from ...bot.messages import format_welcome_message, format_error_message
-from ...bot.keyboards import get_main_keyboard
-from ...utils.security import validate_request_security
-from ...utils.validators import validate_user_input
+from src.config.logging import SecureLogger
+from src.core.auth import get_user_role, add_user_to_group, update_env_file
+from src.core.storage import AdminManager
+from src.core.monitoring import get_all_groups
+from src.core.registration_manager import registration_manager
+from src.core.threshold_context_manager import threshold_context_manager
+from src.services.bot_service import BotService
+from src.bot.messages import format_welcome_message, format_error_message
+from src.bot.keyboards import get_main_keyboard, get_quick_main_keyboard, get_persistent_keyboard
+from src.bot.utils import reply_with_keyboard, send_message_with_persistent_keyboard
+from src.utils.security import validate_request_security
+from src.utils.validators import validate_user_input
 
 logger = SecureLogger(__name__)
+
+# ПРИМЕЧАНИЕ: Основная логика обработки ввода перенесена в новые модули:
+# - src.bot.handlers.input_handlers - обработка текстового ввода
+# - src.bot.handlers.registration_handlers - обработка регистрации
+# - src.services.bot_service - бизнес-логика
+# Этот файл содержит старые функции для совместимости и будет постепенно рефакторизован
 
 
 async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    Обработчик текстовых сообщений (регистрация пользователей)
+    Обработчик текстовых сообщений - перенаправляет на новый InputHandler
+    
+    DEPRECATED: Эта функция оставлена для совместимости.
+    Используйте src.bot.handlers.input_handlers.InputHandler.handle_text_input
     """
-    chat_id = update.effective_chat.id
-    text = update.message.text.strip()
-    
-    # Проверка безопасности
-    is_safe, error_msg = validate_request_security(chat_id, text)
-    if not is_safe:
-        await update.message.reply_text(format_error_message('rate_limited', error_msg))
-        return
-    
-    # Валидация входных данных
-    if not validate_user_input(text):
-        await update.message.reply_text(
-            format_error_message('invalid_input', 'Содержит недопустимые символы')
-        )
-        return
-    
-    logger.info(f"Текстовое сообщение от {chat_id}: {len(text)} символов")
-    
-    try:
-        # Проверяем, не обрабатывается ли ввод пороговых значений
-        threshold_handled = await handle_threshold_input(update, text, chat_id)
-        if threshold_handled:
-            return
-        
-        # Проверяем, зарегистрирован ли пользователь
-        admin_info = AdminManager.load_admin_info(chat_id)
-        
-        if not admin_info or 'fio' not in admin_info:
-            # Проверяем команду сброса регистрации ТОЛЬКО для незарегистрированных
-            if text.lower().strip() in ['сброс', 'reset', 'отмена', 'cancel']:
-                await handle_registration_reset(update, chat_id)
-                return
-            
-            # Новый пользователь - обрабатываем регистрацию
-            await handle_user_registration(update, text, chat_id)
-        else:
-            # Существующий пользователь - неизвестная команда
-            await update.message.reply_text(
-                "❓ Неизвестная команда. Используйте меню для навигации."
-            )
-    
-    except Exception as e:
-        logger.error(f"Ошибка обработки текста от {chat_id}: {e}")
-        await update.message.reply_text(
-            format_error_message('system_error', 'Ошибка при обработке сообщения')
-        )
+    from src.bot.handlers.input_handlers import InputHandler
+    return await InputHandler.handle_text_input(update, context)
 
 
 async def handle_user_registration(update: Update, text: str, chat_id: int):
     """
     Обработка многошаговой регистрации нового пользователя
     """
-    # Получаем контекст через context.user_data
-    context = update.callback_query.get_bot().application.user_data.get(chat_id, {}) if hasattr(update, 'callback_query') and update.callback_query else {}
-    if not context:
-        # Используем временное хранение состояния
-        if not hasattr(handle_user_registration, 'temp_storage'):
-            handle_user_registration.temp_storage = {}
-        context = handle_user_registration.temp_storage.get(chat_id, {})
+    # Используем временное хранение состояния (убираем проблемный callback_query)
+    if not hasattr(handle_user_registration, 'temp_storage'):
+        handle_user_registration.temp_storage = {}
+    context = handle_user_registration.temp_storage.get(chat_id, {})
     registration_step = context.get('registration_step', 'fio')
     
     logger.info(f"Регистрация пользователя {chat_id}, шаг: {registration_step}")
@@ -155,7 +121,8 @@ async def handle_user_registration(update: Update, text: str, chat_id: int):
         await complete_registration(update, chat_id, context)
     
     else:
-        await update.message.reply_text(
+        await reply_with_keyboard(
+            update,
             "❓ Неизвестное состояние регистрации. Начните с /start"
         )
 
@@ -171,15 +138,16 @@ async def handle_registration_reset(update: Update, chat_id: int):
         handle_user_registration.temp_storage.pop(chat_id, None)
     
     # Показываем сообщение о сбросе и начинаем заново
-    from ...bot.messages import format_welcome_message
+    from src.bot.messages import format_welcome_message
     
+    # При сбросе регистрации НЕ добавляем кнопку главного меню - пользователь остается в процессе регистрации
     await update.message.reply_text(
         "🔄 **Регистрация сброшена**\n\n"
         "Все данные очищены. Начинаем регистрацию заново:",
         parse_mode='Markdown'
     )
     
-    # Показываем приветственное сообщение
+    # Показываем приветственное сообщение БЕЗ кнопки главного меню
     welcome_message = format_welcome_message(is_new_user=True, chat_id=chat_id)
     await update.message.reply_text(welcome_message, parse_mode='Markdown')
 
@@ -188,8 +156,8 @@ async def show_region_selection(update: Update, chat_id: int):
     """
     Показывает список регионов для выбора с поддержкой множественного выбора
     """
-    from ...core.monitoring import get_all_groups
-    from ...bot.keyboards import get_registration_groups_keyboard
+    from src.core.monitoring import get_all_groups
+    from src.bot.keyboards import get_registration_groups_keyboard
     
     # Получаем контекст для определения уже выбранных групп
     if not hasattr(handle_user_registration, 'temp_storage'):
@@ -205,48 +173,13 @@ async def show_region_selection(update: Update, chat_id: int):
         message_text += f"✅ Уже выбрано: {', '.join(selected_groups)}\n\n"
     message_text += "💡 Можете выбрать несколько регионов"
     
+    # В процессе регистрации НЕ добавляем кнопку главного меню!
     await update.message.reply_text(
         message_text,
         reply_markup=keyboard,
         parse_mode='Markdown'
     )
 
-
-async def complete_registration(update: Update, chat_id: int, context: dict):
-    """
-    Завершает процесс регистрации и отправляет подтверждение big_boss
-    """
-    fio = context.get('fio')
-    selected_groups = context.get('selected_groups', [])
-    position = context.get('position')
-    
-    logger.info(f"Завершение регистрации пользователя {chat_id}: {fio}")
-    
-    try:
-        # НЕ СОХРАНЯЕМ данные до подтверждения! Только отправляем запрос
-        await send_registration_request_to_big_boss(update, chat_id, fio, selected_groups, position)
-        
-        # Уведомляем пользователя
-        groups_text = ', '.join(selected_groups) if selected_groups else 'Не выбраны'
-        await update.message.reply_text(
-            "✅ **Регистрация завершена!**\n\n"
-            f"👤 ФИО: {fio}\n"
-            f"🗺️ Регион(ы): {groups_text}\n"
-            f"💼 Должность: {position}\n\n"
-            "⏳ Ваш запрос отправлен на рассмотрение администратору.\n"
-            "Вы получите уведомление о решении.",
-            parse_mode='Markdown'
-        )
-        
-        # Очищаем состояние регистрации
-        if hasattr(handle_user_registration, 'temp_storage'):
-            handle_user_registration.temp_storage.pop(chat_id, None)
-    
-    except Exception as e:
-        logger.error(f"Ошибка при завершении регистрации {chat_id}: {e}")
-        await update.message.reply_text(
-            format_error_message('system_error', 'Ошибка при завершении регистрации')
-        )
 
 
 async def send_registration_request_to_big_boss(update: Update, chat_id: int, fio: str, selected_groups: list, position: str):
@@ -334,77 +267,6 @@ def remove_pending_registration(registration_id: str):
         send_registration_request_to_big_boss._pending_registrations.pop(registration_id, None)
 
 
-def validate_fio(fio: str) -> bool:
-    """
-    Усиленная валидация ФИО с защитой от бессмысленных данных
-    """
-    if not fio or not isinstance(fio, str):
-        return False
-    
-    fio = fio.strip()
-    
-    # Проверка длины
-    if len(fio) < 5 or len(fio) > 100:
-        return False
-    
-    # Проверка на подозрительные паттерны
-    fio_lower = fio.lower()
-    
-    # Запрещенные паттерны (тест, спам, бессмыслица)
-    suspicious_patterns = [
-        r'test', r'тест', r'spam', r'спам', r'fake', r'фейк',
-        r'admin', r'администратор', r'root', r'user', r'юзер',
-        r'qwerty', r'asdf', r'123', r'111', r'000',
-        r'aaa+', r'ааа+', r'xxx', r'ыыы+',  # Повторяющиеся символы
-        r'([a-zа-я])\1{3,}',  # 4+ одинаковых символа подряд
-        r'^[a-zа-я]{1,2}\s[a-zа-я]{1,2}\s[a-zа-я]{1,2}$'  # Слишком короткие части
-    ]
-    
-    for pattern in suspicious_patterns:
-        if re.search(pattern, fio_lower):
-            return False
-    
-    words = fio.split()
-    
-    # Поддержка 3-5 слов (Фамилия Имя Отчество [Второе имя] [Приставка])
-    if len(words) < 3 or len(words) > 5:
-        return False
-    
-    # Валидация каждого слова
-    for i, word in enumerate(words):
-        if not word or len(word) < 2 or len(word) > 15:
-            return False
-        
-        # Только буквы, дефисы и апострофы
-        if not re.match(r'^[А-Яа-яЁёA-Za-z\-\']+$', word):
-            return False
-        
-        # Каждое слово должно начинаться с заглавной буквы
-        if not word[0].isupper():
-            return False
-        
-        # Слово не должно состоять только из дефисов/апострофов
-        if word.replace('-', '').replace("'", '') == '':
-            return False
-        
-        # Первые 3 слова должны быть достаточно длинными
-        if i < 3 and len(word) < 2:
-            return False
-        
-        # Проверка на повторяющиеся символы в слове
-        if re.search(r'([а-яё])\1{2,}', word.lower()) or re.search(r'([a-z])\1{2,}', word.lower()):
-            return False
-    
-    # Проверяем, что первые 3 слова различаются
-    if len(set(w.lower() for w in words[:3])) < 3:
-        return False
-    
-    # Проверяем правдоподобность (не все слова одинаковой длины)
-    word_lengths = [len(w) for w in words]
-    if len(set(word_lengths)) == 1 and len(words) >= 3:
-        return False
-    
-    return True
 
 
 def validate_position(position: str) -> bool:
@@ -526,18 +388,21 @@ def parse_registration_data(text: str) -> tuple[str, str] | None:
 
 async def handle_threshold_input(update: Update, text: str, chat_id: int) -> bool:
     """
-    Обработка ввода пороговых значений
+    Обработка ввода пороговых значений с редактированием исходного сообщения
     
     Returns:
         True если ввод был обработан как пороговые значения
     """
-    from ...bot.handlers.callbacks import handle_set_threshold_device
-    from ...core.storage import ThresholdManager
-    from ...core.auth import can_access_group
+    from src.bot.handlers.callbacks import handle_set_threshold_device
+    from src.core.storage import ThresholdManager
+    from src.core.auth import can_access_group
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
     
     # Проверяем, есть ли контекст для пороговых значений
     temp_storage = getattr(handle_set_threshold_device, 'temp_storage', {})
     context = temp_storage.get(chat_id)
+    
+    logger.info(f"Проверка контекста для пороговых значений от {chat_id}: temp_storage={list(temp_storage.keys())}, context={context}")
     
     if not context:
         return False
@@ -545,37 +410,92 @@ async def handle_threshold_input(update: Update, text: str, chat_id: int) -> boo
     action = context.get('action')
     group_name = context.get('group_name')
     device_id = context.get('device_id')
+    stored_message_id = context.get('message_id')
+    stored_chat_id = context.get('chat_id')
     
-    if not action or not group_name:
+    if not action or not group_name or not stored_message_id:
         return False
     
-    # Проверяем доступ к группе
-    if not can_access_group(chat_id, group_name):
-        await update.message.reply_text("❌ Нет доступа к этой группе")
+    # Получаем bot instance для редактирования сообщения
+    bot = update.get_bot()
+    
+    # Проверяем доступ к группе (пропускаем для массовых операций)
+    if group_name not in ['USER', 'ALL'] and not can_access_group(chat_id, group_name):
+        try:
+            # Редактируем исходное сообщение с ошибкой доступа
+            keyboard = [[InlineKeyboardButton("🔙 Назад к группам", callback_data="settings_thresholds")]]
+            await bot.edit_message_text(
+                chat_id=stored_chat_id,
+                message_id=stored_message_id,
+                text="❌ Нет доступа к этой группе\n\nВернитесь к выбору групп для продолжения",
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+        except Exception as e:
+            logger.error(f"Ошибка при редактировании сообщения об ошибке доступа: {e}")
         # Очищаем контекст
         temp_storage.pop(chat_id, None)
         return True
     
     # Парсим пороговые значения в формате "мин макс"
     try:
-        parts = text.strip().split()
+        # Очищаем текст от markdown символов и лишних пробелов
+        clean_text = text.strip().replace('`', '').replace('*', '')
+        parts = clean_text.split()
+        
+        logger.info(f"Парсинг пороговых значений от {chat_id}: исходный='{text}', очищенный='{clean_text}', части={parts}")
+        
+        # Удаляем сообщение пользователя с вводом
+        try:
+            await update.message.delete()
+            logger.info(f"Удалено сообщение пользователя с вводом порогов от {chat_id}")
+        except Exception as e:
+            logger.warning(f"Не удалось удалить сообщение пользователя: {e}")
+        
+        # Функция для редактирования исходного сообщения с ошибкой
+        async def edit_with_error(error_text: str):
+            try:
+                back_callback = "settings_thresholds" if group_name in ['USER', 'ALL'] else f"change_threshold_{group_name}"
+                keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data=back_callback)]]
+                await bot.edit_message_text(
+                    chat_id=stored_chat_id,
+                    message_id=stored_message_id,
+                    text=f"{error_text}\n\nПопробуйте ещё раз или вернитесь назад",
+                    reply_markup=InlineKeyboardMarkup(keyboard),
+                    parse_mode='Markdown'
+                )
+            except Exception as e:
+                logger.error(f"Ошибка при редактировании сообщения с ошибкой: {e}")
+        
         if len(parts) != 2:
-            await update.message.reply_text(
-                "❌ Неверный формат. Используйте: `мин макс`\n"
-                "Например: `18 25`",
-                parse_mode='Markdown'
+            await edit_with_error(
+                f"❌ **Неверный формат**\n\n"
+                f"Получено {len(parts)} значений вместо 2\n"
+                f"Используйте: `мин макс`\n"
+                f"Например: `18 25`"
             )
             return True
         
-        min_temp = float(parts[0])
-        max_temp = float(parts[1])
+        try:
+            min_temp = float(parts[0])
+            max_temp = float(parts[1])
+        except ValueError as ve:
+            await edit_with_error(
+                f"❌ **Ошибка парсинга чисел**\n\n"
+                f"Получены значения: `{parts[0]}` и `{parts[1]}`\n"
+                f"Используйте только числа, например: `18 25`"
+            )
+            return True
         
         if min_temp >= max_temp:
-            await update.message.reply_text("❌ Минимальная температура должна быть меньше максимальной")
+            await edit_with_error("❌ **Неверные значения**\n\nМинимальная температура должна быть меньше максимальной")
             return True
         
         if min_temp < -50 or max_temp > 100:
-            await update.message.reply_text("❌ Температуры должны быть в диапазоне от -50°C до 100°C")
+            await edit_with_error("❌ **Недопустимый диапазон**\n\nТемпературы должны быть от -50°C до 100°C")
+            return True
+        
+        if abs(max_temp - min_temp) < 1.0:
+            await edit_with_error("❌ **Слишком малая разность**\n\nРазность между мин и макс должна быть не менее 1°C")
             return True
         
         # Сохраняем пороговые значения
@@ -583,40 +503,182 @@ async def handle_threshold_input(update: Update, text: str, chat_id: int) -> boo
         
         if action == 'set_threshold_group' and device_id == 'ALL':
             # Устанавливаем пороги для всей группы
-            from ...core.monitoring import get_sensors_by_group
+            from src.core.monitoring import get_sensors_by_group
             sensors = get_sensors_by_group(group_name)
             success_count = 0
             
             for sensor in sensors:
                 sensor_device_id = sensor['device_id']
-                if ThresholdManager.set_device_threshold(sensor_device_id, group_name, min_temp, max_temp):
-                    success_count += 1
+                try:
+                    if ThresholdManager.set_device_threshold(sensor_device_id, group_name, min_temp, max_temp):
+                        success_count += 1
+                except Exception as e:
+                    logger.error(f"Ошибка установки порога для {sensor_device_id}: {e}")
             
             success = success_count > 0
             
             if success:
-                await update.message.reply_text(
-                    f"✅ **Пороговые значения установлены для группы {group_name}**\n\n"
-                    f"🌡️ Минимум: {min_temp}°C\n"
-                    f"🌡️ Максимум: {max_temp}°C\n"
-                    f"📊 Обновлено устройств: {success_count}/{len(sensors)}"
-                )
+                # Редактируем исходное сообщение с результатом
+                try:
+                    keyboard = [[InlineKeyboardButton("🔙 Назад к устройствам", callback_data=f"change_threshold_{group_name}")]]
+                    await bot.edit_message_text(
+                        chat_id=stored_chat_id,
+                        message_id=stored_message_id,
+                        text=f"✅ **Пороговые значения установлены для группы {group_name}**\n\n"
+                             f"🌡️ Минимум: {min_temp}°C\n"
+                             f"🌡️ Максимум: {max_temp}°C\n"
+                             f"📊 Обновлено устройств: {success_count}/{len(sensors)}",
+                        reply_markup=InlineKeyboardMarkup(keyboard),
+                        parse_mode='Markdown'
+                    )
+                except Exception as e:
+                    logger.error(f"Ошибка при редактировании сообщения с успехом: {e}")
             else:
-                await update.message.reply_text("❌ Ошибка при сохранении пороговых значений")
+                try:
+                    keyboard = [[InlineKeyboardButton("🔙 Назад к устройствам", callback_data=f"change_threshold_{group_name}")]]
+                    await bot.edit_message_text(
+                        chat_id=stored_chat_id,
+                        message_id=stored_message_id,
+                        text="❌ **Ошибка при сохранении**\n\nПороговые значения не удалось установить",
+                        reply_markup=InlineKeyboardMarkup(keyboard),
+                        parse_mode='Markdown'
+                    )
+                except Exception as e:
+                    logger.error(f"Ошибка при редактировании сообщения с ошибкой: {e}")
             
         elif action == 'set_threshold_device':
             # Устанавливаем пороги для конкретного устройства
-            success = ThresholdManager.set_device_threshold(device_id, group_name, min_temp, max_temp)
+            try:
+                success = ThresholdManager.set_device_threshold(device_id, group_name, min_temp, max_temp)
+            except Exception as e:
+                logger.error(f"Ошибка установки порога для {device_id}: {e}")
+                success = False
             
             if success:
-                await update.message.reply_text(
-                    f"✅ **Пороговые значения установлены для {device_id}**\n\n"
-                    f"🏢 Группа: {group_name}\n"
-                    f"🌡️ Минимум: {min_temp}°C\n"
-                    f"🌡️ Максимум: {max_temp}°C"
-                )
+                # Редактируем исходное сообщение с результатом
+                try:
+                    keyboard = [[InlineKeyboardButton("🔙 Назад к устройствам", callback_data=f"change_threshold_{group_name}")]]
+                    safe_device_id = device_id.replace('_', '\\_')
+                    await bot.edit_message_text(
+                        chat_id=stored_chat_id,
+                        message_id=stored_message_id,
+                        text=f"✅ **Пороговые значения установлены для {safe_device_id}**\n\n"
+                             f"🏢 Группа: {group_name}\n"
+                             f"🌡️ Минимум: {min_temp}°C\n"
+                             f"🌡️ Максимум: {max_temp}°C",
+                        reply_markup=InlineKeyboardMarkup(keyboard),
+                        parse_mode='Markdown'
+                    )
+                except Exception as e:
+                    logger.error(f"Ошибка при редактировании сообщения с успехом: {e}")
             else:
-                await update.message.reply_text("❌ Ошибка при сохранении пороговых значений")
+                try:
+                    keyboard = [[InlineKeyboardButton("🔙 Назад к устройствам", callback_data=f"change_threshold_{group_name}")]]
+                    await bot.edit_message_text(
+                        chat_id=stored_chat_id,
+                        message_id=stored_message_id,
+                        text="❌ **Ошибка при сохранении**\n\nПороговые значения не удалось установить",
+                        reply_markup=InlineKeyboardMarkup(keyboard),
+                        parse_mode='Markdown'
+                    )
+                except Exception as e:
+                    logger.error(f"Ошибка при редактировании сообщения с ошибкой: {e}")
+        
+        elif action == 'set_threshold_all_sensors':
+            # Устанавливаем пороги для ВСЕХ датчиков всех групп (только для big_boss)
+            from src.core.monitoring import get_all_groups, get_sensors_by_group
+            all_groups = get_all_groups()
+            total_updated = 0
+            total_sensors = 0
+            
+            for group in all_groups:
+                sensors = get_sensors_by_group(group)
+                total_sensors += len(sensors)
+                
+                for sensor in sensors:
+                    sensor_device_id = sensor['device_id']
+                    try:
+                        if ThresholdManager.set_device_threshold(sensor_device_id, group, min_temp, max_temp):
+                            total_updated += 1
+                    except Exception as e:
+                        logger.error(f"Ошибка установки порога для {sensor_device_id} в группе {group}: {e}")
+            
+            if total_updated > 0:
+                try:
+                    keyboard = [[InlineKeyboardButton("🔙 Назад к группам", callback_data="settings_thresholds")]]
+                    await bot.edit_message_text(
+                        chat_id=stored_chat_id,
+                        message_id=stored_message_id,
+                        text=f"🌍 **Пороговые значения установлены для ВСЕХ датчиков!**\n\n"
+                             f"🌡️ Минимум: {min_temp}°C\n"
+                             f"🌡️ Максимум: {max_temp}°C\n"
+                             f"📊 Обновлено датчиков: {total_updated}/{total_sensors}\n"
+                             f"📍 Затронуто групп: {len(all_groups)}",
+                        reply_markup=InlineKeyboardMarkup(keyboard),
+                        parse_mode='Markdown'
+                    )
+                except Exception as e:
+                    logger.error(f"Ошибка при редактировании сообщения с успехом: {e}")
+            else:
+                try:
+                    keyboard = [[InlineKeyboardButton("🔙 Назад к группам", callback_data="settings_thresholds")]]
+                    await bot.edit_message_text(
+                        chat_id=stored_chat_id,
+                        message_id=stored_message_id,
+                        text="❌ **Ошибка при сохранении**\n\nПороговые значения не удалось установить",
+                        reply_markup=InlineKeyboardMarkup(keyboard),
+                        parse_mode='Markdown'
+                    )
+                except Exception as e:
+                    logger.error(f"Ошибка при редактировании сообщения с ошибкой: {e}")
+        
+        elif action == 'set_threshold_user_sensors':
+            # Устанавливаем пороги для всех датчиков доступных пользователю групп
+            from src.core.monitoring import get_sensors_by_group
+            user_groups = context.get('user_groups', [])
+            total_updated = 0
+            total_sensors = 0
+            
+            for group in user_groups:
+                sensors = get_sensors_by_group(group)
+                total_sensors += len(sensors)
+                
+                for sensor in sensors:
+                    sensor_device_id = sensor['device_id']
+                    try:
+                        if ThresholdManager.set_device_threshold(sensor_device_id, group, min_temp, max_temp):
+                            total_updated += 1
+                    except Exception as e:
+                        logger.error(f"Ошибка установки порога для {sensor_device_id} в группе {group}: {e}")
+            
+            if total_updated > 0:
+                try:
+                    keyboard = [[InlineKeyboardButton("🔙 Назад к группам", callback_data="settings_thresholds")]]
+                    await bot.edit_message_text(
+                        chat_id=stored_chat_id,
+                        message_id=stored_message_id,
+                        text=f"🔧 **Пороговые значения установлены для всех ваших датчиков!**\n\n"
+                             f"🌡️ Минимум: {min_temp}°C\n"
+                             f"🌡️ Максимум: {max_temp}°C\n"
+                             f"📊 Обновлено датчиков: {total_updated}/{total_sensors}\n"
+                             f"📍 Затронуто групп: {', '.join(user_groups)} ({len(user_groups)})",
+                        reply_markup=InlineKeyboardMarkup(keyboard),
+                        parse_mode='Markdown'
+                    )
+                except Exception as e:
+                    logger.error(f"Ошибка при редактировании сообщения с успехом: {e}")
+            else:
+                try:
+                    keyboard = [[InlineKeyboardButton("🔙 Назад к группам", callback_data="settings_thresholds")]]
+                    await bot.edit_message_text(
+                        chat_id=stored_chat_id,
+                        message_id=stored_message_id,
+                        text="❌ **Ошибка при сохранении**\n\nПороговые значения не удалось установить",
+                        reply_markup=InlineKeyboardMarkup(keyboard),
+                        parse_mode='Markdown'
+                    )
+                except Exception as e:
+                    logger.error(f"Ошибка при редактировании сообщения с ошибкой: {e}")
         
         # Очищаем контекст
         temp_storage.pop(chat_id, None)
@@ -625,15 +687,672 @@ async def handle_threshold_input(update: Update, text: str, chat_id: int) -> boo
         return True
         
     except ValueError:
-        await update.message.reply_text(
-            "❌ Неверные числовые значения. Используйте: `мин макс`\n"
-            "Например: `18.5 25.0`",
-            parse_mode='Markdown'
-        )
+        try:
+            back_callback = "settings_thresholds" if group_name in ['USER', 'ALL'] else f"change_threshold_{group_name}"
+            keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data=back_callback)]]
+            await bot.edit_message_text(
+                chat_id=stored_chat_id,
+                message_id=stored_message_id,
+                text="❌ **Неверные числовые значения**\n\nИспользуйте: `мин макс`\nНапример: `18.5 25.0`",
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode='Markdown'
+            )
+        except Exception as e:
+            logger.error(f"Ошибка при редактировании сообщения с ошибкой ValueError: {e}")
+        temp_storage.pop(chat_id, None)
         return True
     except Exception as e:
         logger.error(f"Ошибка обработки пороговых значений от {chat_id}: {e}")
-        await update.message.reply_text("❌ Ошибка при обработке пороговых значений")
+        try:
+            back_callback = "settings_thresholds" if group_name in ['USER', 'ALL'] else f"change_threshold_{group_name}"
+            keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data=back_callback)]]
+            await bot.edit_message_text(
+                chat_id=stored_chat_id,
+                message_id=stored_message_id,
+                text="❌ **Системная ошибка**\n\nПроизошла ошибка при обработке пороговых значений",
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode='Markdown'
+            )
+        except Exception as e2:
+            logger.error(f"Ошибка при редактировании сообщения с системной ошибкой: {e2}")
         # Очищаем контекст при ошибке
         temp_storage.pop(chat_id, None)
         return True
+
+
+async def handle_unknown_command_in_existing_menu(update: Update, chat_id: int, text: str) -> bool:
+    """
+    Пытается найти последнее активное меню и отобразить ошибку в нём
+    
+    Returns:
+        True если удалось отредактировать существующее меню
+    """
+    from src.bot.handlers.callbacks import handle_set_threshold_device
+    from src.bot.utils import get_last_user_menu
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+    
+    # Удаляем сообщение пользователя с неизвестной командой
+    try:
+        await update.message.delete()
+        logger.info(f"Удалено сообщение пользователя с неизвестной командой: '{text[:50]}'")
+    except Exception as e:
+        logger.warning(f"Не удалось удалить сообщение пользователя: {e}")
+    
+    bot = update.get_bot()
+    
+    # Приоритет 1: Проверяем контекст пороговых значений
+    temp_storage = getattr(handle_set_threshold_device, 'temp_storage', {})
+    threshold_context = temp_storage.get(chat_id)
+    
+    if threshold_context and threshold_context.get('message_id') and threshold_context.get('chat_id'):
+        # Нашли активное меню пороговых значений
+        try:
+            stored_message_id = threshold_context.get('message_id')
+            stored_chat_id = threshold_context.get('chat_id')
+            group_name = threshold_context.get('group_name', 'settings')
+            
+            # Определяем кнопку возврата
+            if group_name in ['USER', 'ALL']:
+                back_callback = "settings_thresholds"
+                back_text = "🔙 Назад к группам"
+            else:
+                back_callback = f"change_threshold_{group_name}"
+                back_text = "🔙 Назад к устройствам"
+            
+            keyboard = [[InlineKeyboardButton(back_text, callback_data=back_callback)]]
+            
+            await bot.edit_message_text(
+                chat_id=stored_chat_id,
+                message_id=stored_message_id,
+                text=f"❌ **Некорректный ввод**\n\n"
+                     f"Получен: `{text[:50]}`\n\n"
+                     f"Для установки порогов сначала выберите датчик или группу, "
+                     f"а затем введите значения в формате: `мин макс`",
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode='Markdown'
+            )
+            
+            logger.info(f"Отображена ошибка неизвестной команды в активном меню порогов для {chat_id}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Ошибка при редактировании активного меню порогов: {e}")
+    
+    # Приоритет 2: Проверяем последнее меню пользователя
+    last_menu = get_last_user_menu(chat_id)
+    
+    if last_menu and last_menu.get('message_id') and last_menu.get('chat_id'):
+        try:
+            stored_message_id = last_menu.get('message_id')
+            stored_chat_id = last_menu.get('chat_id')
+            
+            # Создаём клавиатуру главного меню
+            from src.bot.keyboards import get_main_keyboard
+            from src.core.auth import get_user_role
+            
+            role = get_user_role(chat_id)
+            keyboard = get_main_keyboard(role)
+            
+            await bot.edit_message_text(
+                chat_id=stored_chat_id,
+                message_id=stored_message_id,
+                text=f"❌ **Неизвестная команда**\n\n"
+                     f"Получен: `{text[:30]}`\n\n"
+                     f"Используйте меню для навигации по системе.",
+                reply_markup=keyboard,
+                parse_mode='Markdown'
+            )
+            
+            logger.info(f"Отображена ошибка неизвестной команды в последнем меню для {chat_id}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Ошибка при редактировании последнего меню: {e}")
+    
+    # Не нашли никаких активных меню
+    return False
+
+
+async def handle_url_input(update: Update, chat_id: int, text: str):
+    """
+    Обработчик сообщений со ссылками
+    """
+    # Проверка безопасности
+    is_safe, error_msg = validate_request_security(chat_id, f"url:{text[:100]}")
+    if not is_safe:
+        await update.message.reply_text(format_error_message('rate_limited', error_msg))
+        return
+    
+    logger.info(f"Получена ссылка от {chat_id}: {text[:100]}")
+    
+    # Удаляем сообщение со ссылкой
+    try:
+        await update.message.delete()
+        logger.info(f"Удалено сообщение со ссылкой от {chat_id}")
+    except Exception as e:
+        logger.warning(f"Не удалось удалить сообщение со ссылкой: {e}")
+    
+    # Пытаемся отобразить ошибку в существующем меню
+    url_handled = await handle_media_in_existing_menu(update, chat_id, "🔗 ссылка")
+    if not url_handled:
+        # Если не нашли активное меню, создаем главное меню с ошибкой
+        logger.warning(f"Ссылка удалена, но активное меню не найдено для пользователя {chat_id}. Создаем главное меню.")
+        
+        from src.core.auth import get_user_role
+        from src.bot.keyboards import get_main_keyboard
+        
+        role = get_user_role(chat_id)
+        keyboard = get_main_keyboard(role)
+        
+        # Создаем главное меню с сообщением об ошибке
+        sent_message = await update.get_bot().send_message(
+            chat_id=chat_id,
+            text=f"❌ **Неподдерживаемый тип сообщения**\n\n"
+                 f"Получена: 🔗 ссылка\n\n"
+                 f"Бот не работает со ссылками. Используйте кнопки меню для навигации.",
+            reply_markup=keyboard,
+            parse_mode='Markdown'
+        )
+        
+        # ВАЖНО: Регистрируем созданное главное меню для отслеживания
+        if sent_message:
+            from src.bot.utils import track_user_menu
+            track_user_menu(
+                user_id=chat_id, 
+                chat_id=chat_id, 
+                message_id=sent_message.message_id, 
+                menu_type="main",
+                menu_context={}
+            )
+
+
+async def handle_media_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Обработчик всех типов медиа (картинки, видео, аудио, документы)
+    Удаляет медиа-файлы и показывает ошибку в последнем активном меню
+    """
+    chat_id = update.effective_chat.id
+    message = update.message
+    
+    # Определяем тип медиа
+    media_type = "unknown"
+    if message.photo:
+        media_type = "🖼️ изображение"
+    elif message.video:
+        media_type = "🎥 видео"
+    elif message.audio:
+        media_type = "🎵 аудио"
+    elif message.voice:
+        media_type = "🎤 голосовое сообщение"
+    elif message.video_note:
+        media_type = "📹 видеосообщение"
+    elif message.document:
+        media_type = "📄 документ"
+    elif message.sticker:
+        media_type = "📎 стикер"
+    elif message.animation:
+        media_type = "📹 GIF-анимация"
+    elif message.contact:
+        media_type = "📞 контакт"
+    elif message.location:
+        media_type = "🗺️ геолокация"
+    elif message.venue:
+        media_type = "🏢 место"
+    elif message.poll:
+        media_type = "📊 опрос"
+    elif message.dice:
+        media_type = "🎲 кубик"
+    elif message.game:
+        media_type = "🎮 игра"
+    elif message.invoice:
+        media_type = "💳 счет/инвойс"
+    elif message.successful_payment:
+        media_type = "💰 платеж"
+    elif message.passport_data:
+        media_type = "🛂 паспортные данные"
+    elif getattr(message, 'story', None):
+        media_type = "📖 история"
+    elif message.has_media_spoiler:
+        media_type = "🙈 медиа со спойлером"
+    elif message.has_protected_content:
+        media_type = "🔒 защищенный контент"
+    elif message.is_automatic_forward:
+        media_type = "↪️ автопересылка"
+    elif message.is_topic_message:
+        media_type = "💬 сообщение топика"
+    elif getattr(message, 'user_attachment', None):
+        media_type = "📎 вложение пользователя"
+    
+    # Проверка безопасности
+    is_safe, error_msg = validate_request_security(chat_id, f"media:{media_type}")
+    if not is_safe:
+        await message.reply_text(format_error_message('rate_limited', error_msg))
+        return
+    
+    logger.info(f"Получено {media_type} от {chat_id}")
+    
+    # Удаляем медиа-сообщение
+    try:
+        await message.delete()
+        logger.info(f"Удалено {media_type} от {chat_id}")
+    except Exception as e:
+        logger.warning(f"Не удалось удалить {media_type}: {e}")
+    
+    # Используем универсальную систему умного обновления
+    from src.bot.utils import smart_update_current_menu
+    
+    media_handled = await smart_update_current_menu(
+        update, 
+        chat_id, 
+        "Неподдерживаемый тип сообщения", 
+        media_type
+    )
+    
+    if not media_handled:
+        # Если не нашли активное меню, создаем главное меню с ошибкой
+        logger.warning(f"Медиа {media_type} удалено, но активное меню не найдено для пользователя {chat_id}. Создаем главное меню.")
+        
+        from src.core.auth import get_user_role
+        from src.bot.keyboards import get_main_keyboard
+        
+        role = get_user_role(chat_id)
+        keyboard = get_main_keyboard(role)
+        
+        # Создаем главное меню с сообщением об ошибке
+        sent_message = await update.get_bot().send_message(
+            chat_id=chat_id,
+            text=f"❌ **Неподдерживаемый тип сообщения**\n\n"
+                 f"Получен: {media_type}\n\n"
+                 f"Бот работает только с текстовыми командами и кнопками меню.",
+            reply_markup=keyboard,
+            parse_mode='Markdown'
+        )
+        
+        # ВАЖНО: Регистрируем созданное главное меню для отслеживания
+        if sent_message:
+            from src.bot.utils import track_user_menu
+            track_user_menu(
+                user_id=chat_id, 
+                chat_id=chat_id, 
+                message_id=sent_message.message_id, 
+                menu_type="main",
+                menu_context={}
+            )
+
+
+async def handle_media_in_existing_menu(update: Update, chat_id: int, media_type: str) -> bool:
+    """
+    Пытается найти последнее активное меню и отобразить ошибку о медиа
+    
+    Returns:
+        True если удалось отредактировать существующее меню
+    """
+    from src.bot.handlers.callbacks import handle_set_threshold_device
+    from src.bot.utils import get_last_user_menu
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+    
+    bot = update.get_bot()
+    
+    # Приоритет 1: Проверяем контекст пороговых значений
+    temp_storage = getattr(handle_set_threshold_device, 'temp_storage', {})
+    threshold_context = temp_storage.get(chat_id)
+    
+    if threshold_context and threshold_context.get('message_id') and threshold_context.get('chat_id'):
+        try:
+            stored_message_id = threshold_context.get('message_id')
+            stored_chat_id = threshold_context.get('chat_id')
+            group_name = threshold_context.get('group_name', 'settings')
+            
+            # Определяем кнопку возврата
+            if group_name in ['USER', 'ALL']:
+                back_callback = "settings_thresholds"
+                back_text = "🔙 Назад к группам"
+            else:
+                back_callback = f"change_threshold_{group_name}"
+                back_text = "🔙 Назад к устройствам"
+            
+            keyboard = [[InlineKeyboardButton(back_text, callback_data=back_callback)]]
+            
+            await bot.edit_message_text(
+                chat_id=stored_chat_id,
+                message_id=stored_message_id,
+                text=f"❌ **Неподдерживаемый формат**\n\n"
+                     f"Получен: {media_type}\n\n"
+                     f"Для установки порогов используйте только текстовые сообщения в формате: `мин макс`",
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode='Markdown'
+            )
+            
+            logger.info(f"Отображена ошибка {media_type} в активном меню порогов для {chat_id}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Ошибка при редактировании активного меню порогов для {media_type}: {e}")
+    
+    # Приоритет 2: Проверяем последнее меню пользователя
+    last_menu = get_last_user_menu(chat_id)
+    
+    if last_menu and last_menu.get('message_id') and last_menu.get('chat_id'):
+        try:
+            stored_message_id = last_menu.get('message_id')
+            stored_chat_id = last_menu.get('chat_id')
+            
+            # Создаём клавиатуру главного меню
+            from src.bot.keyboards import get_main_keyboard
+            from src.core.auth import get_user_role
+            
+            role = get_user_role(chat_id)
+            keyboard = get_main_keyboard(role)
+            
+            await bot.edit_message_text(
+                chat_id=stored_chat_id,
+                message_id=stored_message_id,
+                text=f"❌ **Неподдерживаемый тип сообщения**\n\n"
+                     f"Получен: {media_type}\n\n"
+                     f"Бот работает только с текстовыми командами и кнопками меню.",
+                reply_markup=keyboard,
+                parse_mode='Markdown'
+            )
+            
+            logger.info(f"Отображена ошибка {media_type} в последнем меню для {chat_id}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Ошибка при редактировании последнего меню для {media_type}: {e}")
+    
+    # Не нашли никаких активных меню
+    return False
+
+
+
+
+async def handle_invalid_content(update: Update, chat_id: int, _text: str, content_type: str):
+    """
+    Обрабатывает невалидный контент с универсальным умным обновлением меню
+    
+    Args:
+        update: Объект обновления Telegram
+        chat_id: ID чата
+        _text: Исходный текст сообщения (не используется, но нужен для совместимости)
+        content_type: Тип обнаруженного невалидного контента
+    """
+    # Удаляем сообщение пользователя
+    try:
+        await update.message.delete()
+        logger.info(f"Удалено сообщение с невалидным контентом ({content_type}) от {chat_id}")
+    except Exception as e:
+        logger.warning(f"Не удалось удалить сообщение с невалидным контентом: {e}")
+    
+    # Используем новую универсальную систему умного обновления
+    from src.bot.utils import smart_update_current_menu
+    
+    content_handled = await smart_update_current_menu(
+        update, 
+        chat_id, 
+        "Неподдерживаемый тип сообщения", 
+        content_type
+    )
+    
+    if not content_handled:
+        # Если не нашли активное меню, создаем главное меню с ошибкой
+        logger.warning(f"Текстовый контент удален, но активное меню не найдено для пользователя {chat_id}. Создаем главное меню.")
+        
+        from src.core.auth import get_user_role
+        from src.bot.keyboards import get_main_keyboard
+        
+        role = get_user_role(chat_id)
+        keyboard = get_main_keyboard(role)
+        
+        # Создаем главное меню с сообщением об ошибке
+        sent_message = await update.get_bot().send_message(
+            chat_id=chat_id,
+            text=f"❌ **Неподдерживаемый тип сообщения**\n\n"
+                 f"Обнаружен: {content_type}\n\n"
+                 f"Используйте кнопки главного меню для навигации.",
+            reply_markup=keyboard,
+            parse_mode='Markdown'
+        )
+        
+        # ВАЖНО: Регистрируем созданное главное меню для отслеживания
+        if sent_message:
+            from src.bot.utils import track_user_menu
+            track_user_menu(
+                user_id=chat_id, 
+                chat_id=chat_id, 
+                message_id=sent_message.message_id, 
+                menu_type="main",
+                menu_context={}
+            )
+
+
+async def handle_registration_reset_with_smart_deletion(update: Update, chat_id: int, text: str):
+    """
+    Обработка команд сброса регистрации с умным удалением
+    """
+    # Удаляем сообщение пользователя
+    try:
+        await update.message.delete()
+        logger.info(f"Удалено сообщение команды сброса от {chat_id}")
+    except Exception as e:
+        logger.warning(f"Не удалось удалить сообщение команды сброса: {e}")
+    
+    # Выполняем сброс регистрации
+    await handle_registration_reset(update, chat_id)
+
+
+async def handle_user_registration_with_smart_deletion(update: Update, text: str, chat_id: int) -> bool:
+    """
+    Обработка регистрации пользователя с умным удалением
+    
+    Returns:
+        True если текст обработан как часть процесса регистрации
+        False если текст не подходит для регистрации (нужно удалить)
+    """
+    # Проверяем, находится ли пользователь в процессе регистрации
+    if not hasattr(handle_user_registration, 'temp_storage'):
+        handle_user_registration.temp_storage = {}
+    
+    context = handle_user_registration.temp_storage.get(chat_id, {})
+    registration_step = context.get('registration_step', 'fio')
+    
+    # Проверяем валидность шага регистрации
+    valid_steps = ['fio', 'position']
+    if registration_step not in valid_steps:
+        # Неизвестный шаг регистрации - удаляем текст
+        return False
+    
+    # Удаляем сообщение пользователя перед обработкой
+    try:
+        await update.message.delete()
+        logger.info(f"Удалено сообщение регистрации (шаг: {registration_step}) от {chat_id}")
+    except Exception as e:
+        logger.warning(f"Не удалось удалить сообщение регистрации: {e}")
+    
+    # Обрабатываем шаги регистрации в существующих меню
+    if registration_step == 'fio':
+        # Шаг 1: Ввод ФИО
+        if not validate_fio(text):
+            # Неверный формат ФИО - показываем ошибку в существующем меню
+            registration_handled = await handle_media_in_existing_menu(update, chat_id, "❌ неверный формат ФИО")
+            if not registration_handled:
+                # Если не нашли активное меню, создаем сообщение с инструкциями по регистрации
+                logger.warning(f"Неверный ФИО, но активное меню не найдено для пользователя {chat_id}. Создаем сообщение регистрации.")
+                
+                sent_message = await update.get_bot().send_message(
+                    chat_id=chat_id,
+                    text="❌ **Неверный формат ФИО**\n\n"
+                         "Пожалуйста, введите полное ФИО в формате:\n"
+                         "`Иванов Иван Иванович`\n\n"
+                         "Для отмены регистрации напишите: `сброс`",
+                    parse_mode='Markdown'
+                )
+                
+                # НЕ регистрируем это как меню, поскольку это временное сообщение
+            return True
+        
+        # Сохраняем ФИО и переходим к выбору региона
+        context['fio'] = text.strip()
+        context['registration_step'] = 'region'
+        context['selected_groups'] = []
+        handle_user_registration.temp_storage[chat_id] = context
+        
+        # Показываем список регионов в существующем меню
+        await show_region_selection_with_smart_menu(update, chat_id)
+        return True
+        
+    elif registration_step == 'position':
+        # Шаг 3: Ввод должности
+        if not validate_position(text):
+            # Неверная должность - показываем ошибку в существующем меню
+            registration_handled = await handle_media_in_existing_menu(update, chat_id, "❌ неверный формат должности")
+            if not registration_handled:
+                logger.warning(f"Неверная должность, но активное меню не найдено для пользователя {chat_id}. Создаем сообщение регистрации.")
+                
+                sent_message = await update.get_bot().send_message(
+                    chat_id=chat_id,
+                    text="❌ **Неверный формат должности**\n\n"
+                         "Пожалуйста, введите должность:\n"
+                         "Примеры: `Директор`, `Заместитель директора`, `Менеджер`\n\n"
+                         "Для отмены регистрации напишите: `сброс`",
+                    parse_mode='Markdown'
+                )
+            return True
+        
+        # Проверяем валидность контекста
+        if not validate_registration_context(context, 'position'):
+            registration_handled = await handle_media_in_existing_menu(update, chat_id, "❌ ошибка в процессе регистрации")
+            if not registration_handled:
+                logger.warning(f"Ошибка регистрации, но активное меню не найдено для пользователя {chat_id}. Создаем сообщение с инструкциями.")
+                
+                sent_message = await update.get_bot().send_message(
+                    chat_id=chat_id,
+                    text="❌ **Ошибка в процессе регистрации**\n\n"
+                         "Произошла ошибка в данных регистрации.\n"
+                         "Начните регистрацию заново с команды `/start`",
+                    parse_mode='Markdown'
+                )
+            # Очищаем поврежденные данные
+            handle_user_registration.temp_storage.pop(chat_id, None)
+            return True
+        
+        # Завершаем регистрацию
+        context['position'] = text.strip()
+        handle_user_registration.temp_storage[chat_id] = context
+        await complete_registration_with_smart_menu(update, chat_id, context)
+        return True
+    
+    # Неизвестный шаг - текст не обработан
+    return False
+
+
+async def show_region_selection_with_smart_menu(update: Update, chat_id: int):
+    """
+    Показывает выбор региона в существующем меню
+    """
+    # Пытаемся найти последнее активное меню
+    from src.bot.utils import get_last_user_menu
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+    
+    bot = update.get_bot()
+    last_menu = get_last_user_menu(chat_id)
+    
+    # Создаём клавиатуру с регионами
+    groups = get_all_groups()
+    keyboard = []
+    for i, group in enumerate(groups):
+        keyboard.append([InlineKeyboardButton(f"📍 {group}", callback_data=f"reg_select_group_{group}")])
+        if i >= 10:  # Ограничиваем количество групп
+            break
+    
+    text = (
+        "**🏢 Выбор рабочих групп**\n\n"
+        "Выберите группы складов, к которым у вас есть доступ:\n\n"
+        "📋 **Доступные группы:**"
+    )
+    
+    if last_menu and last_menu.get('message_id') and last_menu.get('chat_id'):
+        try:
+            await bot.edit_message_text(
+                chat_id=last_menu.get('chat_id'),
+                message_id=last_menu.get('message_id'),
+                text=text,
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode='Markdown'
+            )
+            return
+        except Exception as e:
+            logger.error(f"Ошибка при редактировании меню для выбора региона: {e}")
+    
+    # Если не получилось отредактировать, создаём новое
+    await reply_with_keyboard(
+        update,
+        text,
+        custom_keyboard=InlineKeyboardMarkup(keyboard),
+        is_registration=True
+    )
+
+
+async def complete_registration_with_smart_menu(update: Update, chat_id: int, context: dict):
+    """
+    Завершает регистрацию в существующем меню
+    """
+    await complete_registration(update, chat_id, context)
+
+
+async def handle_unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Обработчик неизвестных команд (начинающихся с /)
+    """
+    chat_id = update.effective_chat.id
+    command = update.message.text.strip()
+    
+    logger.info(f"Неизвестная команда от {chat_id}: {command}")
+    
+    # Удаляем сообщение с командой
+    try:
+        await update.message.delete()
+        logger.info(f"Удалена неизвестная команда ({command}) от {chat_id}")
+    except Exception as e:
+        logger.warning(f"Не удалось удалить неизвестную команду: {e}")
+    
+    # Используем универсальную систему умного обновления
+    from src.bot.utils import smart_update_current_menu
+    
+    command_handled = await smart_update_current_menu(
+        update, 
+        chat_id, 
+        "Неизвестная команда", 
+        f"/{command.lstrip('/')}"
+    )
+    
+    if not command_handled:
+        # Если не нашли активное меню, создаем главное меню с ошибкой
+        logger.warning(f"Неизвестная команда {command}, но активное меню не найдено для пользователя {chat_id}. Создаем главное меню.")
+        
+        from src.core.auth import get_user_role
+        from src.bot.keyboards import get_main_keyboard
+        
+        role = get_user_role(chat_id)
+        keyboard = get_main_keyboard(role)
+        
+        # Создаем главное меню с сообщением об ошибке
+        sent_message = await update.get_bot().send_message(
+            chat_id=chat_id,
+            text=f"❌ **Неизвестная команда**\n\n"
+                 f"Команда: `{command}`\n\n"
+                 f"Доступные команды: /start, /help\n"
+                 f"Используйте кнопки меню для навигации.",
+            reply_markup=keyboard,
+            parse_mode='Markdown'
+        )
+        
+        # ВАЖНО: Регистрируем созданное главное меню для отслеживания
+        if sent_message:
+            from src.bot.utils import track_user_menu
+            track_user_menu(
+                user_id=chat_id, 
+                chat_id=chat_id, 
+                message_id=sent_message.message_id, 
+                menu_type="main",
+                menu_context={}
+            )

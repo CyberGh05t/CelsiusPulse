@@ -3,8 +3,8 @@
 Защита от различных типов атак и вредоносного ввода
 """
 import re
-from typing import Any, Optional
-from ..config.settings import MAX_MESSAGE_LENGTH
+from typing import Any
+from src.config.settings import MAX_MESSAGE_LENGTH
 
 
 def validate_user_input(text: str) -> bool:
@@ -195,6 +195,48 @@ def validate_json_structure(data: dict, required_fields: list) -> bool:
     # Проверяем наличие всех обязательных полей
     for field in required_fields:
         if field not in data:
+            return False
+    
+    return True
+
+
+def validate_fio(fio: str) -> bool:
+    """
+    Усиленная валидация ФИО с защитой от бессмысленных данных
+    
+    Args:
+        fio: ФИО для проверки
+        
+    Returns:
+        True если ФИО корректно
+    """
+    
+    if not fio or not isinstance(fio, str):
+        return False
+    
+    fio = fio.strip()
+    
+    # Проверка длины
+    if len(fio) < 5 or len(fio) > 100:
+        return False
+    
+    words = fio.split()
+    
+    # Поддержка 3-5 слов (Фамилия Имя Отчество [Второе имя] [Приставка])
+    if len(words) < 3 or len(words) > 5:
+        return False
+    
+    # Валидация каждого слова
+    for i, word in enumerate(words):
+        if not word or len(word) < 2 or len(word) > 15:
+            return False
+        
+        # Только буквы, дефисы и апострофы
+        if not re.match(r'^[А-Яа-яЁёA-Za-z\-\']+$', word):
+            return False
+        
+        # Каждое слово должно начинаться с заглавной буквы
+        if not word[0].isupper():
             return False
     
     return True

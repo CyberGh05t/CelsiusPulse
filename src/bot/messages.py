@@ -3,12 +3,9 @@
 """
 from datetime import datetime
 from typing import Dict, List, Any
-from ..core.monitoring import format_timestamp
-from ..core.storage import ThresholdManager
-from ..utils.validators import sanitize_string, escape_markdown
-
-
-
+from src.core.monitoring import format_timestamp
+from src.core.storage import ThresholdManager
+from src.utils.validators import sanitize_string, escape_markdown
 
 def format_sensor_message(sensor: Dict[str, Any], escape_md: bool = False) -> str:
     """
@@ -80,7 +77,6 @@ def format_sensor_message(sensor: Dict[str, Any], escape_md: bool = False) -> st
 
         message_parts = [
             f"{status_icon} {temp_icon} {escape_markdown(device_id) if escape_md else device_id}",
-            f"📍 Группа: {group}",
             f"🌡️ Температура: {temperature}°C",
             threshold_info,
             f"⏰ Время: {formatted_time}"
@@ -214,7 +210,6 @@ def format_alert_message(sensor: Dict[str, Any], alert_type: str, threshold_info
     message = (
         f"{icon} ТЕМПЕРАТУРНАЯ ТРЕВОГА {icon}\n\n"
         f"🏷️ Датчик: {escape_markdown(device_id)}\n"
-        f"📍 Группа: {group}\n"
         f"🌡️ Температура: {temperature}°C\n"
         f"⏰ Время: {format_timestamp(timestamp)}\n"
     )
@@ -249,9 +244,19 @@ def format_admin_list_message(admins: List[Dict[str, Any]]) -> str:
         groups = admin.get('groups', [])
         registered = admin.get('registered', 'Неизвестно')
         
+        # Определяем роль пользователя
+        chat_id = admin.get('chat_id')
+        if chat_id:
+            from src.core.auth import get_user_role
+            role = get_user_role(chat_id)
+            role_text = "Big Boss" if role == 'big_boss' else "Администратор"
+        else:
+            role_text = "Неизвестно"
+        
         admin_info = (
             f"{i}. {fio}\n"
             f"💼 Должность: {position}\n"
+            f"🔐 Роль: {role_text}\n"
             f"📋 Группы: {', '.join(groups) if groups else 'Нет назначенных групп'}\n"
             f"📅 Регистрация: {registered}"
         )
@@ -316,16 +321,14 @@ def format_statistics_message(stats: Dict[str, Any]) -> str:
     # Основная статистика (компактный формат)
     message = (
         "📈 Статистика системы\n\n"
-        f"🌡️ Всего датчиков: {total}  \n"
-        f"✅ Валидных: {valid} | ⚠️ Невалидных: {invalid} | 🔥 Критических: {critical}\n"
-        f"📊 Групп: {stats.get('total_groups', 0)} | 🕐 Обновлено: {stats.get('last_update', 'Неизвестно')}"
+        f"🌡️ Всего датчиков: {total} | 📊 Групп: {stats.get('total_groups', 0)}\n"
+        f"✅ Валидных: {valid} | ⛔️ Невалидных: {invalid}\n"
+        f"⚠️ Критических: {critical}"
     )
     
     # Расшифровка проблем (если есть)
     validation_errors = stats.get('validation_errors_analysis', {})
     critical_issues = stats.get('critical_issues_analysis', {})
-    groups_breakdown = stats.get('groups_breakdown', {})
-    problem_sensors = stats.get('problem_sensors', {})
     
     if validation_errors or critical_issues:
         message += "\n\n🔍 Проблемы:"
@@ -335,60 +338,18 @@ def format_statistics_message(stats: Dict[str, Any]) -> str:
             error_parts = []
             for error_type, count in validation_errors.items():
                 error_parts.append(f"{error_type} ({count})")
-            message += f"\n⚠️ Невалидные: {', '.join(error_parts)}"
+            message += f"\n⛔️ Невалидные: {', '.join(error_parts)}"
         
         # Расшифровка критических проблем
         if critical_issues:
             critical_parts = []
             for issue_type, count in critical_issues.items():
                 critical_parts.append(f"{issue_type} ({count})")
-            message += f"\n🔥 Критические: {', '.join(critical_parts)}"
-    
-    # Список конкретных проблемных датчиков или сообщение "все в порядке"
-    if groups_breakdown:
-        # Проверяем, есть ли проблемы в группах
-        has_problems = False
-        for group_stats in groups_breakdown.values():
-            if group_stats.get('critical', 0) > 0 or group_stats.get('invalid', 0) > 0:
-                has_problems = True
-                break
-        
-        if not has_problems and invalid == 0 and critical == 0:
-            # Если нет проблем вообще - показываем успокаивающее сообщение
-            message += "\n\n🌙💤 Показатели в рамках допустимых значений. Спите спокойно 😴✨"
-        else:
-            # Если есть проблемы - показываем конкретные проблемные датчики
-            message += "\n\n📊 Проблемные датчики:"
-            
-            # Показываем критические датчики
-            critical_sensors = problem_sensors.get('critical', [])
-            if critical_sensors:
-                for sensor in critical_sensors[:5]:  # Ограничиваем до 5 для компактности
-                    device_id = sensor.get('device_id', 'N/A')
-                    group = sensor.get('group', 'N/A')
-                    
-                    # Импортируем функцию для получения эмодзи (локальный импорт)
-                    from ..core.monitoring import get_sensor_problem_emoji_and_description
-                    emoji, description = get_sensor_problem_emoji_and_description(sensor, is_critical=True)
-                    message += f"\n{emoji} {group}/{device_id}: {description}"
-            
-            # Показываем невалидные датчики
-            invalid_sensors = problem_sensors.get('invalid', [])
-            if invalid_sensors:
-                for sensor in invalid_sensors[:5]:  # Ограничиваем до 5 для компактности
-                    device_id = sensor.get('device_id', 'N/A')
-                    group = sensor.get('group', 'N/A')
-                    
-                    # Импортируем функцию для получения эмодзи (локальный импорт)
-                    from ..core.monitoring import get_sensor_problem_emoji_and_description
-                    emoji, description = get_sensor_problem_emoji_and_description(sensor, is_critical=False)
-                    message += f"\n{emoji} {group}/{device_id}: {description}"
-            
-            # Показываем общее количество если датчиков больше лимита
-            total_problems = len(critical_sensors) + len(invalid_sensors)
-            if total_problems > 10:
-                message += f"\n... и ещё {total_problems - 10} проблемных датчиков"
-    
+            message += f"\n⚠️ Критические: {', '.join(critical_parts)}"
+
+    # Время обновления в самом низу сообщения
+    message += f"\n\n🕐 Обновлено: {stats.get('last_update', 'Неизвестно')}"
+
     return message
 
 

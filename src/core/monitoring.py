@@ -7,10 +7,10 @@ import requests
 import traceback
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
-from ..config.settings import DOGET_URL, MONITORING_INTERVAL, ALERT_COOLDOWN
-from ..config.logging import SecureLogger
-from ..utils.validators import validate_temperature, validate_device_id, validate_group_name
-from ..utils.security import validate_request_security
+from src.config.settings import DOGET_URL, MONITORING_INTERVAL, ALERT_COOLDOWN
+from src.config.logging import SecureLogger
+from src.utils.validators import validate_temperature, validate_device_id, validate_group_name
+from src.utils.security import validate_request_security
 from .storage import ThresholdManager
 
 logger = SecureLogger(__name__)
@@ -404,9 +404,19 @@ def get_monitoring_statistics() -> Dict[str, Any]:
     
     # Подсчет критических датчиков (только среди валидных)
     critical_sensors = 0
-    for sensor in sensor_data_cache:
-        if sensor.get('validation_status') == 'valid' and check_temperature_threshold(sensor):
+    critical_sensors_list = []
+    valid_sensors_list = [s for s in sensor_data_cache if s.get('validation_status') == 'valid']
+    invalid_sensors_list = [s for s in sensor_data_cache if s.get('validation_status') == 'invalid']
+    
+    for sensor in valid_sensors_list:
+        if check_temperature_threshold(sensor):
             critical_sensors += 1
+            critical_sensors_list.append(sensor)
+    
+    # Добавляем детализированный анализ проблем для Big Boss (как у админов)
+    validation_errors_analysis = analyze_validation_errors(invalid_sensors_list)
+    critical_issues_analysis = analyze_critical_issues(critical_sensors_list)
+    groups_breakdown = analyze_groups_breakdown(sensor_data_cache, groups)
     
     return {
         "total_sensors": total_sensors,
@@ -415,7 +425,15 @@ def get_monitoring_statistics() -> Dict[str, Any]:
         "total_groups": len(groups),
         "critical_sensors": critical_sensors,
         "last_update": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "cache_size": len(sensor_data_cache)
+        "cache_size": len(sensor_data_cache),
+        # Дополнительные данные для расширенной статистики (для Big Boss)
+        "validation_errors_analysis": validation_errors_analysis,
+        "critical_issues_analysis": critical_issues_analysis,
+        "groups_breakdown": groups_breakdown,
+        "problem_sensors": {
+            "invalid": invalid_sensors_list,
+            "critical": critical_sensors_list
+        }
     }
 
 
@@ -548,6 +566,9 @@ def analyze_critical_issues(critical_sensors: List[Dict[str, Any]]) -> Dict[str,
     """
     critical_counts = {"Перегрев": 0, "Переохлаждение": 0}
     
+    import logging
+    logger = logging.getLogger(__name__)
+    
     for sensor in critical_sensors:
         device_id = sensor.get("device_id", "")
         group = sensor.get("group", "")
@@ -558,23 +579,27 @@ def analyze_critical_issues(critical_sensors: List[Dict[str, Any]]) -> Dict[str,
             
         try:
             temp_value = float(temperature)
-            threshold_issue = check_temperature_threshold(sensor)
             
-            if threshold_issue:
-                # Получаем пороги для анализа
-                thresholds = get_cached_thresholds()
-                if group in thresholds and device_id in thresholds[group]:
-                    threshold = thresholds[group][device_id]
-                    min_temp = threshold.get("min")
-                    max_temp = threshold.get("max")
-                    
-                    if max_temp is not None and temp_value > max_temp:
-                        critical_counts["Перегрев"] += 1
-                    elif min_temp is not None and temp_value < min_temp:
-                        critical_counts["Переохлаждение"] += 1
+            # Получаем пороги для анализа - БЕЗ повторного вызова check_temperature_threshold
+            thresholds = get_cached_thresholds()
+            if group in thresholds and device_id in thresholds[group]:
+                threshold = thresholds[group][device_id]
+                min_temp = threshold.get("min")
+                max_temp = threshold.get("max")
+                
+                logger.debug(f"Анализ критического датчика {device_id}: temp={temp_value}, min={min_temp}, max={max_temp}")
+                
+                # Прямая проверка превышения порогов
+                if max_temp is not None and temp_value > max_temp:
+                    critical_counts["Перегрев"] += 1
+                    logger.debug(f"Перегрев: {device_id} = {temp_value}°C > {max_temp}°C")
+                elif min_temp is not None and temp_value < min_temp:
+                    critical_counts["Переохлаждение"] += 1
+                    logger.debug(f"Переохлаждение: {device_id} = {temp_value}°C < {min_temp}°C")
         except (ValueError, TypeError):
             continue
     
+    logger.info(f"Анализ критических проблем: {critical_counts}")
     # Удаляем нулевые значения
     return {k: v for k, v in critical_counts.items() if v > 0}
 

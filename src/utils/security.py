@@ -6,8 +6,8 @@ import time
 from collections import defaultdict, deque
 from datetime import datetime, timedelta
 from typing import Dict, Optional
-from ..config.settings import RATE_LIMIT_PER_MINUTE, ENABLE_RATE_LIMITING
-from ..config.logging import SecureLogger
+from src.config.settings import RATE_LIMIT_PER_MINUTE, ENABLE_RATE_LIMITING
+from src.config.logging import SecureLogger
 
 logger = SecureLogger(__name__)
 
@@ -76,7 +76,7 @@ class RateLimiter:
             True если пользователь заблокирован
         """
         # Никогда не блокируем big_boss пользователей
-        from ..core.auth import BIG_BOSS
+        from src.core.auth import BIG_BOSS
         if chat_id in BIG_BOSS:
             return False
             
@@ -247,3 +247,57 @@ def get_security_stats() -> dict:
         'suspicious_users': len(suspicious_activity),
         'total_suspicious_incidents': sum(suspicious_activity.values())
     }
+
+
+def detect_invalid_content(text: str) -> str:
+    """
+    Обнаруживает различные типы невалидного контента в текстовых сообщениях
+    
+    Args:
+        text: Текст сообщения для проверки
+        
+    Returns:
+        Строка с типом найденного невалидного контента или пустая строка если контент валидный
+    """
+    import re
+    
+    if not text or not isinstance(text, str):
+        return ""
+    
+    text_lower = text.lower().strip()
+    
+    # Проверка на URL и ссылки
+    url_patterns = [
+        r'https?://',
+        r'www\.',
+        r'\.com',
+        r'\.ru', 
+        r'\.org',
+        r'\.net',
+        r't\.me',
+        r'telegram\.me',
+        r'@[a-zA-Z0-9_]+',  # упоминания пользователей
+    ]
+    
+    for pattern in url_patterns:
+        if re.search(pattern, text_lower):
+            return "🔗 ссылка"
+    
+    # Проверка на спам-слова
+    spam_words = [
+        'реклама', 'продам', 'купи', 'скидка', 'акция', 'бонус',
+        'заработок', 'деньги', 'доллар', 'биткоин', 'криптовалюта',
+        'млм', 'сетевой маркетинг', 'пирамида'
+    ]
+    
+    for spam_word in spam_words:
+        if spam_word in text_lower:
+            return "📢 рекламный контент"
+    
+    # Проверка на файловые расширения
+    file_extensions = ['.exe', '.bat', '.cmd', '.scr', '.zip', '.rar']
+    for ext in file_extensions:
+        if ext in text_lower:
+            return "📎 подозрительный файл"
+    
+    return ""

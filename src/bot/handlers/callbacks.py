@@ -3,45 +3,37 @@
 """
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
-from ...config.logging import SecureLogger
-from ...core.auth import get_user_role, is_authorized, can_access_group
-from ...core.monitoring import get_all_groups, get_sensors_by_group, get_sensor_by_id, get_monitoring_statistics, get_user_statistics
-from ...core.storage import AdminManager, ThresholdManager
-from ...bot.messages import (
+from src.config.logging import SecureLogger
+from src.core.auth import get_user_role, is_authorized, can_access_group
+from src.core.monitoring import get_all_groups, get_sensors_by_group, get_sensor_by_id, get_monitoring_statistics, get_user_statistics
+from src.core.storage import AdminManager, ThresholdManager
+from src.bot.messages import (
     format_group_sensors_message, format_sensor_message, 
     format_admin_list_message, format_thresholds_message,
     format_statistics_message, format_error_message
 )
-from ...bot.keyboards import (
+from src.bot.keyboards import (
     get_main_keyboard, get_groups_keyboard, get_sensor_details_keyboard,
-    get_help_keyboard
+    get_help_keyboard, get_quick_main_keyboard
 )
-from ...utils.security import validate_request_security, get_security_stats
+from src.bot.utils import safe_edit_with_keyboard
+from src.utils.security import validate_request_security, get_security_stats
 
 logger = SecureLogger(__name__)
 
 # Кеш для предотвращения повторных обращений
 user_last_action = {}
 
-async def safe_edit_message(query, text, reply_markup=None, parse_mode='Markdown'):
-    """
-    Безопасное редактирование сообщения с обработкой ошибок
-    """
-    try:
-        await query.edit_message_text(
-            text, 
-            reply_markup=reply_markup,
-            parse_mode=parse_mode
-        )
-        return True
-    except Exception as e:
-        logger.debug(f"Не удалось отредактировать сообщение: {e}")
-        try:
-            # Пытаемся показать уведомление
-            await query.answer("✅ Данные обновлены")
-        except:
-            pass
-        return False
+# Функция safe_edit_with_keyboard заменена на safe_edit_with_keyboard из bot.utils
+# для обеспечения постоянного отображения главного меню
+
+
+def clear_threshold_context(user_id: int):
+    """Очищает контекст пороговых значений для пользователя"""
+    temp_storage = getattr(handle_set_threshold_device, 'temp_storage', {})
+    if user_id in temp_storage:
+        temp_storage.pop(user_id, None)
+        logger.info(f"Контекст пороговых значений очищен для пользователя {user_id}")
 
 
 async def button_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -84,6 +76,13 @@ async def button_callback_handler(update: Update, context: ContextTypes.DEFAULT_
         
         # Обработка различных callback действий
         if callback_data == "back_to_main":
+            # Очищаем контекст пороговых значений при возврате в главное меню
+            clear_threshold_context(chat_id)
+            await handle_main_menu(query, role)
+        
+        elif callback_data == "main_menu":
+            # Обработка кнопки "Главное меню" из различных подменю
+            clear_threshold_context(chat_id)
             await handle_main_menu(query, role)
         
         elif callback_data == "my_data":
@@ -97,17 +96,21 @@ async def button_callback_handler(update: Update, context: ContextTypes.DEFAULT_
             if block_if_in_registration(chat_id):
                 await query.answer("⚠️ Завершите сначала регистрацию", show_alert=True)
                 return
+            # Очищаем контекст пороговых значений при переходе к выбору групп
+            clear_threshold_context(chat_id)
             await handle_select_group(query, chat_id, role)
         
         elif callback_data.startswith("group:"):
             group_name = callback_data.split(":", 1)[1]
             
             # Проверяем, находится ли пользователь в процессе регистрации
-            from ..handlers.admin import handle_user_registration
+            from src.bot.handlers.admin import handle_user_registration
             context = getattr(handle_user_registration, 'temp_storage', {}).get(chat_id, {})
             if context.get('registration_step') == 'region':
-                await handle_region_selection(query, chat_id, group_name)
+                # В процессе регистрации - используем toggle для множественного выбора
+                await handle_toggle_group(query, chat_id, group_name)
             else:
+                # Обычный просмотр группы
                 await handle_group_data(query, chat_id, role, group_name)
         
         elif callback_data.startswith("toggle_group:"):
@@ -144,6 +147,7 @@ async def button_callback_handler(update: Update, context: ContextTypes.DEFAULT_
             if block_if_in_registration(chat_id):
                 await query.answer("⚠️ Завершите сначала регистрацию", show_alert=True)
                 return
+            # НЕ очищаем контекст - пользователь остается в меню пороговых значений
             await handle_settings_thresholds(query, role)
         
         elif callback_data == "list_admins":
@@ -175,20 +179,55 @@ async def button_callback_handler(update: Update, context: ContextTypes.DEFAULT_
         elif callback_data.startswith("change_threshold_"):
             group_name = callback_data[17:]  # Убираем "change_threshold_"
             if not can_access_group(chat_id, group_name):
-                await query.answer("❌ Нет доступа к этой группе", show_alert=True)
+                await query.answer("🚫 Доступ запрещен к группе: " + group_name, show_alert=True)
                 return
+            # Очищаем предыдущий контекст при переходе к другой группе
+            clear_threshold_context(chat_id)
             await handle_change_threshold_group(query, group_name, role)
         
         elif callback_data.startswith("set_threshold_"):
             # Format: set_threshold_GROUP_DEVICE
-            parts = callback_data[14:].split('_', 1)  # Убираем "set_threshold_"
-            if len(parts) >= 2:
-                group_name = parts[0]
-                device_id = parts[1]
-                if not can_access_group(chat_id, group_name):
-                    await query.answer("❌ Нет доступа к этой группе", show_alert=True)
+            # Специальная обработка для корректного парсинга device_id с подчеркиваниями
+            remaining = callback_data[14:]  # Убираем "set_threshold_"
+            
+            # Специальные случаи
+            if remaining == "ALL_ALL":
+                group_name = "ALL"
+                device_id = "ALL"
+            elif remaining == "USER_ALL":
+                group_name = "USER"
+                device_id = "ALL"
+            else:
+                # Найдем первое подчеркивание - это разделитель группы и device_id
+                first_underscore = remaining.find('_')
+                if first_underscore != -1:
+                    group_name = remaining[:first_underscore]
+                    device_id = remaining[first_underscore + 1:]
+                else:
+                    # Fallback для некорректных данных
+                    parts = remaining.split('_', 1)
+                    if len(parts) >= 2:
+                        group_name = parts[0]
+                        device_id = parts[1]
+                    else:
+                        return
+            
+            # Специальные случаи для массовой установки порогов
+            if group_name == "ALL" and device_id == "ALL":
+                if role != 'big_boss':
+                    await query.answer("🚫 Доступ запрещен: требуется роль Big Boss", show_alert=True)
                     return
-                await handle_set_threshold_device(query, group_name, device_id, role)
+                await handle_set_threshold_all_sensors(query, role)
+                return
+            elif group_name == "USER" and device_id == "ALL":
+                # Установка порогов для всех датчиков пользователя (на основе доступных групп)
+                await handle_set_threshold_user_sensors(query, role, chat_id)
+                return
+            
+            if not can_access_group(chat_id, group_name):
+                await query.answer("🚫 Доступ запрещен к группе: " + group_name, show_alert=True)
+                return
+            await handle_set_threshold_device(query, group_name, device_id, role)
         
         elif callback_data == "dummy":
             # Заглушка для декоративных кнопок
@@ -236,14 +275,31 @@ async def button_callback_handler(update: Update, context: ContextTypes.DEFAULT_
 
 async def handle_main_menu(query, role: str):
     """Отображает главное меню"""
+    from src.bot.utils import safe_edit_with_keyboard
+    
     keyboard = get_main_keyboard(role)
     text = "🏠 Главное меню\n\nВыберите действие:"
     
-    await safe_edit_message(query, text, reply_markup=keyboard)
+    # Используем специальный параметр для главного меню
+    try:
+        await query.edit_message_text(
+            text,
+            reply_markup=keyboard,
+            parse_mode='Markdown'
+        )
+    except Exception:
+        # Если редактирование не удалось, отправляем новое сообщение
+        await query.message.reply_text(
+            text,
+            reply_markup=keyboard,
+            parse_mode='Markdown'
+        )
+        await query.answer("✅ Главное меню")
 
 
 async def handle_my_data(query, chat_id: int, role: str):
     """Отображает данные пользователя"""
+    # Получаем главное меню БЕЗ дополнительной кнопки возврата
     keyboard = get_main_keyboard(role)
     
     if role == 'big_boss':
@@ -259,19 +315,10 @@ async def handle_my_data(query, chat_id: int, role: str):
         message += f"🆔 Chat ID: `{chat_id}`\n"
         message += f"💼 Роль: Big Boss (полный доступ)\n"
         message += f"🌐 Доступ: ко всем группам системы\n\n"
-        message += f"📊 Общая статистика:\n"
-        message += f"📍 Всего групп: {len(all_groups)}\n"
-        message += f"🌡️ Всего датчиков: {total_sensors}\n"
-        
-        if all_groups:
-            message += "\n🏢 Группы в системе:\n"
-            for group in all_groups:
-                sensors_count = len(get_sensors_by_group(group))
-                message += f"• {group}: {sensors_count} датчиков\n"
                 
     elif role == 'admin':
         # Для админов берем группы ТОЛЬКО из .env (ADMIN_GROUPS)
-        from ...core.auth import ADMIN_GROUPS
+        from src.core.auth import ADMIN_GROUPS
         groups = ADMIN_GROUPS.get(chat_id, [])
         
         # Справочная информация из admins.json
@@ -294,12 +341,17 @@ async def handle_my_data(query, chat_id: int, role: str):
         message += "⚠️ Вы не зарегистрированы в системе.\n"
         message += "Нажмите /start для регистрации."
     
-    await safe_edit_message(query, message, reply_markup=keyboard)
+    # Используем прямой вызов чтобы НЕ добавлять дополнительную кнопку "Главное меню"
+    try:
+        await query.edit_message_text(message, reply_markup=keyboard, parse_mode='Markdown')
+    except Exception:
+        # "Мои данные" статичны, при повторном нажатии молча игнорируем ошибку идентичного контента
+        pass
 
 
 async def handle_select_group(query, chat_id: int, role: str):
     """Отображает список доступных групп с правильной фильтрацией по ролям"""
-    from ...core.auth import get_user_accessible_groups
+    from src.core.auth import get_user_accessible_groups
     
     # Получаем ВСЕ группы из кеша (без фильтрации)
     all_cached_groups = get_all_groups()
@@ -330,7 +382,13 @@ async def handle_select_group(query, chat_id: int, role: str):
     keyboard = get_groups_keyboard(available_groups, show_all=(role in ['admin', 'big_boss']))
     text = "📊 Выберите группу для просмотра:"
     
-    await safe_edit_message(query, text, reply_markup=keyboard)
+    await safe_edit_with_keyboard(
+        query, 
+        text, 
+        reply_markup=keyboard,
+        menu_type="info",
+        menu_context={}
+    )
 
 
 async def handle_group_data(query, chat_id: int, role: str, group_name: str):
@@ -345,11 +403,11 @@ async def handle_group_data(query, chat_id: int, role: str, group_name: str):
     sensors = get_sensors_by_group(group_name)
     message = format_group_sensors_message(group_name, sensors)
     
-    from ...core.auth import get_user_accessible_groups
+    from src.core.auth import get_user_accessible_groups
     user_groups = get_user_accessible_groups(query.from_user.id)
     keyboard = get_groups_keyboard(user_groups, show_all=(role in ['admin', 'big_boss']), selected_group=group_name)
     
-    await safe_edit_message(query, message, reply_markup=keyboard, parse_mode=None)
+    await safe_edit_with_keyboard(query, message, reply_markup=keyboard, parse_mode=None)
 
 
 async def handle_sensor_data(query, sensor_id: str):
@@ -365,7 +423,7 @@ async def handle_sensor_data(query, sensor_id: str):
     message = format_sensor_message(sensor)
     keyboard = get_sensor_details_keyboard(sensor_id, sensor['group'])
     
-    await safe_edit_message(query, message, reply_markup=keyboard)
+    await safe_edit_with_keyboard(query, message, reply_markup=keyboard)
 
 
 async def handle_admin_all_data(query, role: str):
@@ -376,7 +434,7 @@ async def handle_admin_all_data(query, role: str):
         )
         return
     
-    from ...core.auth import get_user_accessible_groups
+    from src.core.auth import get_user_accessible_groups
     
     # Получаем группы, доступные пользователю
     user_groups = get_user_accessible_groups(query.from_user.id)
@@ -400,7 +458,7 @@ async def handle_admin_all_data(query, role: str):
     # Возвращаемся к меню выбора групп вместо главного меню
     keyboard = get_groups_keyboard(user_groups, show_all=(role in ['admin', 'big_boss']))
     
-    await safe_edit_message(query, message, reply_markup=keyboard)
+    await safe_edit_with_keyboard(query, message, reply_markup=keyboard)
 
 
 async def handle_admin_thresholds(query, role: str):
@@ -411,7 +469,7 @@ async def handle_admin_thresholds(query, role: str):
         )
         return
     
-    from ...core.auth import get_user_accessible_groups
+    from src.core.auth import get_user_accessible_groups
     
     # Получаем все пороги
     all_thresholds = ThresholdManager.load_thresholds()
@@ -431,7 +489,7 @@ async def handle_admin_thresholds(query, role: str):
     
     keyboard = get_main_keyboard(role)
     
-    await safe_edit_message(query, message, reply_markup=keyboard)
+    await safe_edit_with_keyboard(query, message, reply_markup=keyboard)
 
 
 async def handle_list_admins(query, role: str):
@@ -445,9 +503,13 @@ async def handle_list_admins(query, role: str):
     admins = AdminManager.get_all_admins()
     message = format_admin_list_message(admins)
     
-    keyboard = get_main_keyboard(role)
+    # Добавляем время обновления для обеспечения обновления при повторном нажатии
+    from datetime import datetime
+    message += f"\n\n⏰ Обновлено: {datetime.now().strftime('%H:%M:%S')}"
     
-    await safe_edit_message(query, message, reply_markup=keyboard)
+    # Список администраторов с главным меню (как статистика)  
+    keyboard = get_main_keyboard(role)
+    await query.edit_message_text(message, reply_markup=keyboard)
 
 
 async def handle_system_stats(query, role: str):
@@ -464,7 +526,8 @@ async def handle_system_stats(query, role: str):
     
     keyboard = get_main_keyboard(role)
     
-    await safe_edit_message(query, message, reply_markup=keyboard, parse_mode=None)
+    # Используем прямой вызов чтобы НЕ добавлять дополнительную кнопку "Главное меню"
+    await query.edit_message_text(message, reply_markup=keyboard)
 
 
 async def handle_security_stats(query, role: str):
@@ -485,13 +548,18 @@ async def handle_security_stats(query, role: str):
         f"🔍 Всего инцидентов: {security_stats.get('total_suspicious_incidents', 0)}"
     )
     
-    keyboard = get_main_keyboard(role)
+    # Добавляем время обновления для обеспечения обновления при повторном нажатии
+    from datetime import datetime
+    message += f"\n\n⏰ Обновлено: {datetime.now().strftime('%H:%M:%S')}"
     
-    await safe_edit_message(query, message, reply_markup=keyboard)
+    # Статистика безопасности с главным меню (как статистика)
+    keyboard = get_main_keyboard(role)
+    await query.edit_message_text(message, reply_markup=keyboard)
 
 
 async def handle_help(query):
     """Отображает справку"""
+    from src.bot.utils import safe_edit_with_keyboard
     keyboard = get_help_keyboard()
     
     help_text = """
@@ -508,10 +576,13 @@ async def handle_help(query):
 Используйте кнопки для перемещения по меню.
     """
     
-    await query.edit_message_text(
+    await safe_edit_with_keyboard(
+        query, 
         help_text, 
         reply_markup=keyboard,
-        parse_mode='Markdown'
+        parse_mode='Markdown',
+        menu_type="help",
+        menu_context={}
     )
 
 
@@ -519,8 +590,8 @@ async def handle_help(query):
 
 async def handle_region_selection(query, chat_id: int, region: str):
     """Обработка выбора региона при регистрации"""
-    from ..handlers.admin import handle_user_registration, validate_registration_context
-    from ...core.monitoring import get_all_groups
+    from src.bot.handlers.admin import handle_user_registration, validate_registration_context
+    from src.core.monitoring import get_all_groups
     
     # Получаем контекст из временного хранилища
     if not hasattr(handle_user_registration, 'temp_storage'):
@@ -567,7 +638,7 @@ def is_user_in_registration(chat_id: int) -> bool:
     """
     Проверяет, находится ли пользователь в процессе регистрации
     """
-    from ..handlers.admin import handle_user_registration
+    from src.bot.handlers.admin import handle_user_registration
     
     if not hasattr(handle_user_registration, 'temp_storage'):
         return False
@@ -597,9 +668,9 @@ def registration_guard(func):
 
 async def handle_toggle_group(query, chat_id: int, group_name: str):
     """Обработка переключения выбора группы"""
-    from ..handlers.admin import handle_user_registration
-    from ...core.monitoring import get_all_groups
-    from ...bot.keyboards import get_registration_groups_keyboard
+    from src.bot.handlers.admin import handle_user_registration
+    from src.core.monitoring import get_all_groups
+    from src.bot.keyboards import get_registration_groups_keyboard
     
     # Получаем контекст регистрации
     if not hasattr(handle_user_registration, 'temp_storage'):
@@ -630,12 +701,26 @@ async def handle_toggle_group(query, chat_id: int, group_name: str):
         message_text += f"✅ Выбрано: {', '.join(selected_groups)}\n\n"
     message_text += "💡 Можете выбрать несколько регионов"
     
-    await safe_edit_message(query, message_text, reply_markup=keyboard)
+    # В процессе регистрации НЕ добавляем кнопку главного меню!
+    try:
+        await query.edit_message_text(
+            message_text,
+            reply_markup=keyboard,
+            parse_mode='Markdown'
+        )
+    except Exception:
+        # Если не удалось отредактировать, отправляем новое сообщение
+        await query.message.reply_text(
+            message_text,
+            reply_markup=keyboard,
+            parse_mode='Markdown'
+        )
+        await query.answer("✅ Выбор обновлен")
 
 
 async def handle_finish_group_selection(query, chat_id: int):
     """Завершение выбора групп и переход к вводу должности"""
-    from ..handlers.admin import handle_user_registration
+    from src.bot.handlers.admin import handle_user_registration
     
     # Получаем контекст регистрации
     if not hasattr(handle_user_registration, 'temp_storage'):
@@ -668,7 +753,7 @@ async def handle_finish_group_selection(query, chat_id: int):
 
 async def handle_settings_thresholds(query, role: str):
     """Показывает меню выбора группы для изменения пороговых значений"""
-    from ...core.auth import get_user_accessible_groups
+    from src.core.auth import get_user_accessible_groups
     
     user_groups = get_user_accessible_groups(query.from_user.id)
     
@@ -677,20 +762,48 @@ async def handle_settings_thresholds(query, role: str):
         return
     
     keyboard = []
-    for group in user_groups:
+    
+    # Добавляем кнопку для установки порогов всем датчикам пользователя
+    # Для админов - только если у них больше одной группы, для big_boss - всегда
+    if role == "big_boss":
         keyboard.append([
-            InlineKeyboardButton(f"🔧 {group}", callback_data=f"change_threshold_{group}")
+            InlineKeyboardButton("🌍 Все датчики системы", callback_data="set_threshold_ALL_ALL"),
+            InlineKeyboardButton("🔧 Мои группы", callback_data="set_threshold_USER_ALL")
         ])
+        keyboard.append([InlineKeyboardButton("➖➖➖", callback_data="dummy")])
+    elif role == "admin" and len(user_groups) > 1:
+        keyboard.append([
+            InlineKeyboardButton("🔧 Все мои группы", callback_data="set_threshold_USER_ALL")
+        ])
+        keyboard.append([InlineKeyboardButton("➖➖➖", callback_data="dummy")])
+    
+    # Группы располагаем в 3 ряда
+    for i in range(0, len(user_groups), 3):
+        row = []
+        for j in range(3):
+            if i + j < len(user_groups):
+                group = user_groups[i + j]
+                row.append(InlineKeyboardButton(f"🔧 {group}", callback_data=f"change_threshold_{group}"))
+        keyboard.append(row)
     
     keyboard.append([InlineKeyboardButton("⬅️ Назад", callback_data="back_to_main")])
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     if role == "big_boss":
-        message = "⚙️ Изменение пороговых значений (BigBoss)\n\nВыберите группу:"
+        message = "⚙️ Изменение пороговых значений (BigBoss)\n\nВыберите группу или все датчики:"
     else:
-        message = "⚙️ Изменение пороговых значений\n\nВыберите вашу группу:"
+        if len(user_groups) > 1:
+            message = "⚙️ Изменение пороговых значений\n\nВыберите группу или все ваши группы:"
+        else:
+            message = "⚙️ Изменение пороговых значений\n\nВыберите вашу группу:"
     
-    await safe_edit_message(query, message, reply_markup=reply_markup)
+    await safe_edit_with_keyboard(
+        query, 
+        message, 
+        reply_markup=reply_markup,
+        menu_type="thresholds",
+        menu_context={}
+    )
 
 
 async def handle_change_threshold_group(query, group_name: str, role: str):
@@ -710,16 +823,19 @@ async def handle_change_threshold_group(query, group_name: str, role: str):
     
     keyboard.append([InlineKeyboardButton("➖➖➖", callback_data="dummy")])
     
-    # Кнопки для каждого устройства
-    for sensor in sensors[:10]:  # Ограничиваем до 10 устройств
-        device_id = sensor['device_id']
-        temp = sensor.get('temperature', 'N/A')
-        keyboard.append([
-            InlineKeyboardButton(
-                f"{device_id} ({temp}°C)",
-                callback_data=f"set_threshold_{group_name}_{device_id}"
-            )
-        ])
+    # Кнопки для каждого устройства - располагаем в 3 ряда
+    for i in range(0, min(len(sensors), 10), 3):  # Ограничиваем до 10 устройств
+        row = []
+        for j in range(3):
+            if i + j < min(len(sensors), 10):
+                sensor = sensors[i + j]
+                device_id = sensor['device_id']
+                temp = sensor.get('temperature', 'N/A')
+                row.append(InlineKeyboardButton(
+                    f"{device_id} ({temp}°C)",
+                    callback_data=f"set_threshold_{group_name}_{device_id}"
+                ))
+        keyboard.append(row)
     
     keyboard.append([
         InlineKeyboardButton("🔙 Назад к группам", callback_data="settings_thresholds")
@@ -731,12 +847,22 @@ async def handle_change_threshold_group(query, group_name: str, role: str):
     message += f"Найдено датчиков: {len(sensors)}\n"
     message += "Выберите устройство или установите общие значения:"
     
-    await safe_edit_message(query, message, reply_markup=reply_markup)
+    await safe_edit_with_keyboard(
+        query, 
+        message, 
+        reply_markup=reply_markup,
+        menu_type="group_devices",
+        menu_context={"group_name": group_name}
+    )
 
 
 async def handle_set_threshold_device(query, group_name: str, device_id: str, role: str):
     """Показывает текущие пороги и предлагает их изменить"""
-    from ...core.storage import ThresholdManager
+    from src.core.storage import ThresholdManager
+    import logging
+    
+    logger = logging.getLogger(__name__)
+    logger.info(f"handle_set_threshold_device: group_name='{group_name}', device_id='{device_id}'")
     
     current_thresholds = ThresholdManager.load_thresholds()
     current = current_thresholds.get(group_name, {}).get(device_id, {"min": 18.0, "max": 25.0})
@@ -749,12 +875,14 @@ async def handle_set_threshold_device(query, group_name: str, device_id: str, ro
         message += "`мин макс`\n"
         message += "Например: `18 25`"
         
-        # Сохраняем контекст для обработки ввода
+        # Сохраняем контекст для обработки ввода с ID сообщения
         temp_storage = getattr(handle_set_threshold_device, 'temp_storage', {})
         temp_storage[query.from_user.id] = {
             'action': 'set_threshold_group',
             'group_name': group_name,
-            'device_id': device_id
+            'device_id': device_id,
+            'message_id': query.message.message_id,
+            'chat_id': query.message.chat_id
         }
         handle_set_threshold_device.temp_storage = temp_storage
         
@@ -763,7 +891,10 @@ async def handle_set_threshold_device(query, group_name: str, device_id: str, ro
         sensor = get_sensor_by_id(device_id)
         current_temp = sensor.get('temperature', 'N/A') if sensor else 'N/A'
         
-        message = f"⚙️ Устройство {device_id}\n"
+        # Экранируем подчеркивания в device_id для корректного отображения в Markdown
+        safe_device_id = device_id.replace('_', '\\_')
+        
+        message = f"⚙️ Устройство {safe_device_id}\n"
         message += f"🏢 Группа: {group_name}\n"
         message += f"🌡️ Текущая температура: {current_temp}°C\n\n"
         message += f"Текущие пороги:\n"
@@ -773,12 +904,14 @@ async def handle_set_threshold_device(query, group_name: str, device_id: str, ro
         message += "`мин макс`\n"
         message += "Например: `18 25`"
         
-        # Сохраняем контекст для обработки ввода
+        # Сохраняем контекст для обработки ввода с ID сообщения
         temp_storage = getattr(handle_set_threshold_device, 'temp_storage', {})
         temp_storage[query.from_user.id] = {
             'action': 'set_threshold_device',
             'group_name': group_name,
-            'device_id': device_id
+            'device_id': device_id,
+            'message_id': query.message.message_id,
+            'chat_id': query.message.chat_id
         }
         handle_set_threshold_device.temp_storage = temp_storage
     
@@ -787,12 +920,113 @@ async def handle_set_threshold_device(query, group_name: str, device_id: str, ro
     ]]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    await safe_edit_message(query, message, reply_markup=reply_markup)
+    # Для KRR логируем полное сообщение для отладки
+    if group_name == "KRR":
+        logger.info(f"KRR message length: {len(message)} chars")
+        logger.info(f"KRR message content: {message}")
+        logger.info(f"KRR callback_data: change_threshold_{group_name}")
+    
+    try:
+        await safe_edit_with_keyboard(
+            query, 
+            message, 
+            reply_markup=reply_markup,
+            menu_type="device_threshold",
+            menu_context={"group_name": group_name, "device_id": device_id}
+        )
+        logger.info(f"Successfully edited threshold message for {group_name}:{device_id}")
+    except Exception as e:
+        logger.error(f"Error editing threshold message for {group_name}:{device_id}: {e}")
+        # Попробуем отправить новое сообщение
+        try:
+            await query.message.reply_text(message, reply_markup=reply_markup, parse_mode='Markdown')
+        except Exception as e2:
+            logger.error(f"Error sending new threshold message for {group_name}:{device_id}: {e2}")
+            await query.answer("❌ Ошибка при отображении порогов", show_alert=True)
+
+
+async def handle_set_threshold_all_sensors(query, role: str):
+    """Установка пороговых значений для ВСЕХ датчиков всех групп (только для big_boss)"""
+    from src.core.storage import ThresholdManager
+    from src.core.monitoring import get_all_groups, get_sensors_by_group
+    
+    # Получаем общее количество датчиков
+    all_groups = get_all_groups()
+    total_sensors = sum(len(get_sensors_by_group(group)) for group in all_groups)
+    
+    message = f"🌍 **Установка порогов для ВСЕХ датчиков**\n\n"
+    message += f"📍 Всего групп: {len(all_groups)}\n"
+    message += f"🌡️ Всего датчиков: {total_sensors}\n\n"
+    message += f"⚠️ **ВНИМАНИЕ!** Это изменит пороговые значения для ВСЕХ {total_sensors} датчиков во ВСЕХ группах системы!\n\n"
+    message += f"📝 Отправьте новые значения в формате:\n"
+    message += f"`мин макс`\n"
+    message += f"Например: `18 25`"
+    
+    # Сохраняем контекст для обработки ввода с ID сообщения
+    temp_storage = getattr(handle_set_threshold_device, 'temp_storage', {})
+    temp_storage[query.from_user.id] = {
+        'action': 'set_threshold_all_sensors',
+        'group_name': 'ALL',
+        'device_id': 'ALL',
+        'message_id': query.message.message_id,
+        'chat_id': query.message.chat_id
+    }
+    handle_set_threshold_device.temp_storage = temp_storage
+    
+    keyboard = [[
+        InlineKeyboardButton("🔙 Назад к группам", callback_data="settings_thresholds")
+    ]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await safe_edit_with_keyboard(query, message, reply_markup=reply_markup)
+
+
+async def handle_set_threshold_user_sensors(query, role: str, chat_id: int):
+    """Установка пороговых значений для ВСЕХ датчиков доступных пользователю групп"""
+    from src.core.storage import ThresholdManager
+    from src.core.monitoring import get_sensors_by_group
+    from src.core.auth import get_user_accessible_groups
+    
+    # Получаем группы доступные пользователю
+    user_groups = get_user_accessible_groups(chat_id)
+    if not user_groups:
+        await query.edit_message_text("❌ У вас нет доступа к группам")
+        return
+    
+    # Получаем общее количество датчиков в доступных группах
+    total_sensors = sum(len(get_sensors_by_group(group)) for group in user_groups)
+    
+    message = f"🔧 **Установка порогов для всех ваших датчиков**\n\n"
+    message += f"📍 Ваши группы: {', '.join(user_groups)}\n"
+    message += f"🌡️ Всего датчиков: {total_sensors}\n\n"
+    message += f"⚠️ **ВНИМАНИЕ!** Это изменит пороговые значения для ВСЕХ {total_sensors} датчиков в ваших {len(user_groups)} группах!\n\n"
+    message += f"📝 Отправьте новые значения в формате:\n"
+    message += f"`мин макс`\n"
+    message += f"Например: `18 25`"
+    
+    # Сохраняем контекст для обработки ввода с ID сообщения
+    temp_storage = getattr(handle_set_threshold_device, 'temp_storage', {})
+    temp_storage[query.from_user.id] = {
+        'action': 'set_threshold_user_sensors',
+        'group_name': 'USER',
+        'device_id': 'ALL',
+        'user_groups': user_groups,  # Сохраняем список доступных групп
+        'message_id': query.message.message_id,
+        'chat_id': query.message.chat_id
+    }
+    handle_set_threshold_device.temp_storage = temp_storage
+    
+    keyboard = [[
+        InlineKeyboardButton("🔙 Назад к группам", callback_data="settings_thresholds")
+    ]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await safe_edit_with_keyboard(query, message, reply_markup=reply_markup)
 
 
 async def handle_confirm_registration_new(query, callback_data: str):
     """Новый обработчик подтверждения регистрации с коротким ID"""
-    from ..handlers.admin import get_pending_registration, remove_pending_registration
+    from src.bot.handlers.admin import get_pending_registration, remove_pending_registration
     
     registration_id = callback_data.split(":")[1]
     registration_data = get_pending_registration(registration_id)
@@ -810,7 +1044,7 @@ async def handle_confirm_registration_new(query, callback_data: str):
     
     try:
         # Обновляем ADMIN_GROUPS в памяти и .env файле
-        from ...core.auth import update_env_file
+        from src.core.auth import update_env_file
         
         # Сначала обновляем глобальные переменные в памяти
         import src.core.auth as auth_module
@@ -826,7 +1060,7 @@ async def handle_confirm_registration_new(query, callback_data: str):
         update_env_file()
         
         # Сохраняем данные администратора в admins.json
-        from ...core.storage import AdminManager
+        from src.core.storage import AdminManager
         
         # Извлекаем nickname если есть
         try:
@@ -845,7 +1079,7 @@ async def handle_confirm_registration_new(query, callback_data: str):
         })
         
         # Уведомляем пользователя
-        from ...core.auth import get_user_role
+        from src.core.auth import get_user_role
         user_role = get_user_role(user_chat_id)
         groups_text = ', '.join(groups)
         await query.get_bot().send_message(
@@ -888,7 +1122,7 @@ async def handle_confirm_registration_new(query, callback_data: str):
 
 async def handle_reject_registration_new(query, callback_data: str):
     """Новый обработчик отклонения регистрации с коротким ID"""
-    from ..handlers.admin import get_pending_registration, remove_pending_registration
+    from src.bot.handlers.admin import get_pending_registration, remove_pending_registration
     
     registration_id = callback_data.split(":")[1]
     registration_data = get_pending_registration(registration_id)
@@ -904,7 +1138,7 @@ async def handle_reject_registration_new(query, callback_data: str):
     
     try:
         # УДАЛЯЕМ данные из admins.json если они там есть
-        from ...core.storage import AdminManager
+        from src.core.storage import AdminManager
         AdminManager.remove_admin(user_chat_id)
         
         # Уведомляем пользователя
@@ -942,7 +1176,7 @@ async def handle_reject_registration_new(query, callback_data: str):
 
 async def handle_help_sections(query, section: str):
     """Обработчик секций помощи (заглушки)"""
-    from ...bot.keyboards import get_help_keyboard
+    from src.bot.keyboards import get_help_keyboard
     
     keyboard = get_help_keyboard()
     
@@ -971,6 +1205,6 @@ async def handle_help_sections(query, section: str):
 Пока что воспользуйтесь основными функциями бота через главное меню.
     """
     
-    await safe_edit_message(query, message, reply_markup=keyboard, parse_mode=None)
+    await safe_edit_with_keyboard(query, message, reply_markup=keyboard, parse_mode=None)
 
 

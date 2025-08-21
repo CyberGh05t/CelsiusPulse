@@ -18,7 +18,7 @@ from src.core.auth import initialize_groups
 from src.core.monitoring import monitor_temperature_loop
 from src.bot.handlers.commands import start_command, help_command
 from src.bot.handlers.callbacks import button_callback_handler
-from src.bot.handlers.admin import handle_text_input
+from src.bot.handlers.admin import handle_text_input, handle_media_input, handle_unknown_command
 
 # Настройка логирования
 setup_logging()
@@ -56,7 +56,41 @@ async def main():
         application.add_handler(CommandHandler("start", start_command))
         application.add_handler(CommandHandler("help", help_command))
         application.add_handler(CallbackQueryHandler(button_callback_handler))
+        
+        # Обработчик неизвестных команд (исключаем /start и /help)
+        application.add_handler(MessageHandler(filters.COMMAND & ~filters.Regex(r'^/(start|help)$'), handle_unknown_command))
+        
+        # Обработчик текстовых сообщений
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input))
+        
+        # Обработчики всех типов медиа-файлов
+        application.add_handler(MessageHandler(filters.PHOTO, handle_media_input))          # Фото
+        application.add_handler(MessageHandler(filters.VIDEO, handle_media_input))          # Видео
+        application.add_handler(MessageHandler(filters.AUDIO, handle_media_input))          # Аудио
+        application.add_handler(MessageHandler(filters.VOICE, handle_media_input))          # Голосовые сообщения
+        application.add_handler(MessageHandler(filters.VIDEO_NOTE, handle_media_input))     # Видеосообщения
+        application.add_handler(MessageHandler(filters.Document.ALL, handle_media_input))   # Документы
+        application.add_handler(MessageHandler(filters.Sticker.ALL, handle_media_input))    # Стикеры
+        application.add_handler(MessageHandler(filters.ANIMATION, handle_media_input))      # GIF-анимации
+        application.add_handler(MessageHandler(filters.CONTACT, handle_media_input))        # Контакты
+        application.add_handler(MessageHandler(filters.LOCATION, handle_media_input))       # Геолокация
+        application.add_handler(MessageHandler(filters.VENUE, handle_media_input))          # Места
+        application.add_handler(MessageHandler(filters.POLL, handle_media_input))           # Опросы
+        application.add_handler(MessageHandler(filters.Dice.ALL, handle_media_input))       # Кубики/эмодзи
+        
+        # Дополнительные типы контента для полного покрытия
+        application.add_handler(MessageHandler(filters.GAME, handle_media_input))           # Игры
+        application.add_handler(MessageHandler(filters.INVOICE, handle_media_input))        # Счета/инвойсы
+        application.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, handle_media_input))  # Платежи
+        application.add_handler(MessageHandler(filters.PASSPORT_DATA, handle_media_input))  # Паспортные данные
+        application.add_handler(MessageHandler(filters.STORY, handle_media_input))          # Истории
+        application.add_handler(MessageHandler(filters.USER_ATTACHMENT, handle_media_input)) # Вложения
+        
+        # Специальные типы сообщений
+        application.add_handler(MessageHandler(filters.HAS_MEDIA_SPOILER, handle_media_input))      # Медиа со спойлером
+        application.add_handler(MessageHandler(filters.HAS_PROTECTED_CONTENT, handle_media_input))  # Защищенный контент
+        application.add_handler(MessageHandler(filters.IS_AUTOMATIC_FORWARD, handle_media_input))   # Автопересылка
+        application.add_handler(MessageHandler(filters.IS_TOPIC_MESSAGE, handle_media_input))       # Сообщения топиков
         
         # Запуск мониторинга в отдельной задаче - как в оригинале
         asyncio.create_task(monitor_temperature_loop())

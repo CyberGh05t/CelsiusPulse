@@ -6,9 +6,9 @@ import os
 import json
 from datetime import datetime
 from typing import Dict, List, Optional, Set, Union
-from ..config.settings import ADMINS_FILE
-from ..config.logging import SecureLogger
-from ..utils.validators import validate_chat_id
+from src.config.settings import ADMINS_FILE
+from src.config.logging import SecureLogger
+from src.utils.validators import validate_chat_id
 
 logger = SecureLogger(__name__)
 
@@ -273,7 +273,7 @@ def get_user_accessible_groups(chat_id: int) -> List[str]:
     
     # Big boss имеет доступ ко всем группам
     if role == "big_boss":
-        from ..core.monitoring import get_all_groups
+        from src.core.monitoring import get_all_groups
         return get_all_groups()
     
     # Администраторы видят только свои группы (отсортированные по алфавиту)
