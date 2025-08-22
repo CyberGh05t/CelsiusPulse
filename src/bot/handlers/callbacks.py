@@ -30,10 +30,9 @@ user_last_action = {}
 
 def clear_threshold_context(user_id: int):
     """Очищает контекст пороговых значений для пользователя"""
-    temp_storage = getattr(handle_set_threshold_device, 'temp_storage', {})
-    if user_id in temp_storage:
-        temp_storage.pop(user_id, None)
-        logger.info(f"Контекст пороговых значений очищен для пользователя {user_id}")
+    from src.core.threshold_context_manager import threshold_context_manager
+    threshold_context_manager.clear_context(user_id)
+    logger.info(f"Контекст пороговых значений очищен для пользователя {user_id}")
 
 
 async def button_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -77,12 +76,12 @@ async def button_callback_handler(update: Update, context: ContextTypes.DEFAULT_
         # Обработка различных callback действий
         if callback_data == "back_to_main":
             # Очищаем контекст пороговых значений при возврате в главное меню
-            clear_threshold_context(chat_id)
+            clear_threshold_context(query.from_user.id)
             await handle_main_menu(query, role)
         
         elif callback_data == "main_menu":
             # Обработка кнопки "Главное меню" из различных подменю
-            clear_threshold_context(chat_id)
+            clear_threshold_context(query.from_user.id)
             await handle_main_menu(query, role)
         
         elif callback_data == "my_data":
@@ -90,6 +89,8 @@ async def button_callback_handler(update: Update, context: ContextTypes.DEFAULT_
             if is_user_in_registration(chat_id):
                 await query.answer("⚠️ Завершите сначала регистрацию", show_alert=True)
                 return
+            # Очищаем контекст пороговых значений при переходе к "Мои данные"
+            clear_threshold_context(query.from_user.id)
             await handle_my_data(query, chat_id, role)
         
         elif callback_data == "select_group":
@@ -97,20 +98,21 @@ async def button_callback_handler(update: Update, context: ContextTypes.DEFAULT_
                 await query.answer("⚠️ Завершите сначала регистрацию", show_alert=True)
                 return
             # Очищаем контекст пороговых значений при переходе к выбору групп
-            clear_threshold_context(chat_id)
+            clear_threshold_context(query.from_user.id)
             await handle_select_group(query, chat_id, role)
         
         elif callback_data.startswith("group:"):
             group_name = callback_data.split(":", 1)[1]
             
             # Проверяем, находится ли пользователь в процессе регистрации
-            from src.bot.handlers.admin import handle_user_registration
-            context = getattr(handle_user_registration, 'temp_storage', {}).get(chat_id, {})
-            if context.get('registration_step') == 'region':
+            from src.bot.handlers.registration_handlers import registration_manager
+            context = registration_manager.get_registration_data(chat_id) or {}
+            if context.get('step') == 'groups':
                 # В процессе регистрации - используем toggle для множественного выбора
                 await handle_toggle_group(query, chat_id, group_name)
             else:
-                # Обычный просмотр группы
+                # Обычный просмотр группы - очищаем контекст пороговых значений
+                clear_threshold_context(query.from_user.id)
                 await handle_group_data(query, chat_id, role, group_name)
         
         elif callback_data.startswith("toggle_group:"):
@@ -129,49 +131,64 @@ async def button_callback_handler(update: Update, context: ContextTypes.DEFAULT_
         
         elif callback_data.startswith("sensor:"):
             sensor_id = callback_data.split(":", 1)[1]
+            # Очищаем контекст пороговых значений при переходе к просмотру датчика
+            clear_threshold_context(query.from_user.id)
             await handle_sensor_data(query, sensor_id)
         
         elif callback_data == "admin_all_data":
             if block_if_in_registration(chat_id):
                 await query.answer("⚠️ Завершите сначала регистрацию", show_alert=True)
                 return
+            # Очищаем контекст пороговых значений при переходе к "Все данные"
+            clear_threshold_context(query.from_user.id)
             await handle_admin_all_data(query, role)
         
         elif callback_data == "admin_thresholds":
             if block_if_in_registration(chat_id):
                 await query.answer("⚠️ Завершите сначала регистрацию", show_alert=True)
                 return
+            # Очищаем контекст пороговых значений при переходе к "Просмотр порогов"
+            clear_threshold_context(query.from_user.id)
             await handle_admin_thresholds(query, role)
             
         elif callback_data == "settings_thresholds":
             if block_if_in_registration(chat_id):
                 await query.answer("⚠️ Завершите сначала регистрацию", show_alert=True)
                 return
-            # НЕ очищаем контекст - пользователь остается в меню пороговых значений
+            # Очищаем контекст пороговых значений при возврате к меню выбора групп
+            clear_threshold_context(query.from_user.id)
             await handle_settings_thresholds(query, role)
         
         elif callback_data == "list_admins":
             if block_if_in_registration(chat_id):
                 await query.answer("⚠️ Завершите сначала регистрацию", show_alert=True)
                 return
+            # Очищаем контекст пороговых значений при переходе к "Список администраторов"
+            clear_threshold_context(query.from_user.id)
             await handle_list_admins(query, role)
         
         elif callback_data == "system_stats":
             if block_if_in_registration(chat_id):
                 await query.answer("⚠️ Завершите сначала регистрацию", show_alert=True)
                 return
+            # Очищаем контекст пороговых значений при переходе к "Статистика"
+            clear_threshold_context(query.from_user.id)
             await handle_system_stats(query, role)
         
         elif callback_data == "security_stats":
             if block_if_in_registration(chat_id):
                 await query.answer("⚠️ Завершите сначала регистрацию", show_alert=True)
                 return
+            # Очищаем контекст пороговых значений при переходе к "Безопасность"
+            clear_threshold_context(query.from_user.id)
             await handle_security_stats(query, role)
         
         elif callback_data == "help":
             if block_if_in_registration(chat_id):
                 await query.answer("⚠️ Завершите сначала регистрацию", show_alert=True)
                 return
+            # Очищаем контекст пороговых значений при переходе к "Помощь"
+            clear_threshold_context(query.from_user.id)
             await handle_help(query)
         
         
@@ -182,7 +199,7 @@ async def button_callback_handler(update: Update, context: ContextTypes.DEFAULT_
                 await query.answer("🚫 Доступ запрещен к группе: " + group_name, show_alert=True)
                 return
             # Очищаем предыдущий контекст при переходе к другой группе
-            clear_threshold_context(chat_id)
+            clear_threshold_context(query.from_user.id)
             await handle_change_threshold_group(query, group_name, role)
         
         elif callback_data.startswith("set_threshold_"):
@@ -668,85 +685,94 @@ def registration_guard(func):
 
 async def handle_toggle_group(query, chat_id: int, group_name: str):
     """Обработка переключения выбора группы"""
-    from src.bot.handlers.admin import handle_user_registration
+    from src.core.registration_manager import registration_manager
+    from src.bot.handlers.registration_handlers import RegistrationHandler
+    
+    # Проверяем, что пользователь в процессе регистрации
+    if not registration_manager.is_in_registration(chat_id):
+        await query.answer("❌ Ошибка: пользователь не в процессе регистрации", show_alert=True)
+        return
+    
+    # Проверяем текущий шаг регистрации
+    step = registration_manager.get_registration_step(chat_id)
+    if step != 'region':
+        await query.answer(f"❌ Ошибка: неверный шаг регистрации (текущий: {step})", show_alert=True)
+        return
+    
+    # Переключаем группу напрямую через registration_manager
+    is_added = registration_manager.toggle_group(chat_id, group_name)
+    
+    # Получаем обновленное состояние
+    state = registration_manager.get_registration_state(chat_id)
     from src.core.monitoring import get_all_groups
     from src.bot.keyboards import get_registration_groups_keyboard
     
-    # Получаем контекст регистрации
-    if not hasattr(handle_user_registration, 'temp_storage'):
-        handle_user_registration.temp_storage = {}
-    
-    context = handle_user_registration.temp_storage.get(chat_id, {})
-    if context.get('registration_step') != 'region':
-        await query.answer("❌ Ошибка: неверное состояние регистрации", show_alert=True)
-        return
-    
-    selected_groups = context.get('selected_groups', [])
-    
-    # Переключаем выбор группы
-    if group_name in selected_groups:
-        selected_groups.remove(group_name)
-    else:
-        selected_groups.append(group_name)
-    
-    context['selected_groups'] = selected_groups
-    handle_user_registration.temp_storage[chat_id] = context
-    
-    # Обновляем клавиатуру
     available_groups = get_all_groups()
-    keyboard = get_registration_groups_keyboard(available_groups, selected_groups)
+    keyboard = get_registration_groups_keyboard(available_groups, state.selected_groups)
     
-    message_text = "🗺️ Выберите регион(ы):\n\n"
-    if selected_groups:
-        message_text += f"✅ Выбрано: {', '.join(selected_groups)}\n\n"
-    message_text += "💡 Можете выбрать несколько регионов"
+    groups_text = (
+        f"✅ **ФИО сохранено:** `{state.fio}`\n\n"
+        "🔹 **Шаг 2/3: Выберите ваши рабочие группы**\n\n"
+        "📋 **Доступные группы:**\n"
+        f"• Всего в системе: {len(available_groups)} групп\n"
+        f"• Выбрано: {len(state.selected_groups)} групп\n\n"
+        "💡 **Инструкция:**\n"
+        "• Нажмите на группы, к которым у вас есть доступ\n"
+        "• Можно выбрать несколько групп\n"
+        "• Выбранные группы отмечены ✅\n"
+        "• После выбора нажмите **Завершить выбор**"
+    )
     
-    # В процессе регистрации НЕ добавляем кнопку главного меню!
+    # Обновляем сообщение
     try:
         await query.edit_message_text(
-            message_text,
+            groups_text,
             reply_markup=keyboard,
             parse_mode='Markdown'
         )
-    except Exception:
-        # Если не удалось отредактировать, отправляем новое сообщение
-        await query.message.reply_text(
-            message_text,
-            reply_markup=keyboard,
-            parse_mode='Markdown'
-        )
-        await query.answer("✅ Выбор обновлен")
+    except Exception as e:
+        logger.error(f"Ошибка обновления меню выбора групп: {e}")
+    
+    # Показываем уведомление
+    action = "добавлена" if is_added else "убрана"
+    await query.answer(f"Группа {group_name} {action}", show_alert=False)
 
 
 async def handle_finish_group_selection(query, chat_id: int):
     """Завершение выбора групп и переход к вводу должности"""
-    from src.bot.handlers.admin import handle_user_registration
+    from src.core.registration_manager import registration_manager
+    from src.bot.handlers.registration_handlers import RegistrationHandler
     
-    # Получаем контекст регистрации
-    if not hasattr(handle_user_registration, 'temp_storage'):
-        await query.answer("❌ Ошибка: данные регистрации не найдены", show_alert=True)
-        return
+    # Проверяем, что группы выбраны
+    state = registration_manager.get_registration_state(chat_id)
     
-    context = handle_user_registration.temp_storage.get(chat_id, {})
-    if context.get('registration_step') != 'region':
-        await query.answer("❌ Ошибка: неверное состояние регистрации", show_alert=True)
-        return
-    
-    selected_groups = context.get('selected_groups', [])
-    if not selected_groups:
-        await query.answer("⚠️ Выберите минимум одну группу", show_alert=True)
+    if not state or not state.selected_groups:
+        await query.answer("❌ Выберите минимум одну группу", show_alert=True)
         return
     
     # Переходим к следующему шагу
-    context['registration_step'] = 'position'
-    handle_user_registration.temp_storage[chat_id] = context
-    
-    groups_text = ', '.join(selected_groups)
-    await query.edit_message_text(
-        f"✅ Группы выбраны: {groups_text}\n\n"
-        "💼 Теперь введите должность:",
-        parse_mode='Markdown'
-    )
+    if registration_manager.finish_group_selection(chat_id):
+        position_text = (
+            f"✅ **ФИО:** `{state.fio}`\n"
+            f"✅ **Группы:** {', '.join(state.selected_groups)}\n\n"
+            "🔹 **Шаг 3/3: Введите вашу должность**\n\n"
+            "📋 **Требования:**\n"
+            "• Минимум 2 символа\n"
+            "• Укажите реальную должность\n\n"
+            "📝 **Примеры:**\n"
+            "• `Директор`\n"
+            "• `Заместитель директора`\n"
+            "• `Региональный руководитель`\n"
+            "• `Старший смены`\n"
+            "• `Бригадир`"
+        )
+        
+        await query.edit_message_text(
+            position_text,
+            parse_mode='Markdown'
+        )
+    else:
+        await query.answer("❌ Ошибка при переходе к следующему шагу", show_alert=True)
 
 
 # Функции для работы с пороговыми значениями
@@ -859,6 +885,7 @@ async def handle_change_threshold_group(query, group_name: str, role: str):
 async def handle_set_threshold_device(query, group_name: str, device_id: str, role: str):
     """Показывает текущие пороги и предлагает их изменить"""
     from src.core.storage import ThresholdManager
+    from src.core.threshold_context_manager import threshold_context_manager
     import logging
     
     logger = logging.getLogger(__name__)
@@ -875,16 +902,15 @@ async def handle_set_threshold_device(query, group_name: str, device_id: str, ro
         message += "`мин макс`\n"
         message += "Например: `18 25`"
         
-        # Сохраняем контекст для обработки ввода с ID сообщения
-        temp_storage = getattr(handle_set_threshold_device, 'temp_storage', {})
-        temp_storage[query.from_user.id] = {
-            'action': 'set_threshold_group',
-            'group_name': group_name,
-            'device_id': device_id,
-            'message_id': query.message.message_id,
-            'chat_id': query.message.chat_id
-        }
-        handle_set_threshold_device.temp_storage = temp_storage
+        # Сохраняем контекст через новую систему
+        threshold_context_manager.set_context(
+            user_id=query.from_user.id,
+            chat_id=query.message.chat_id,
+            action='set_threshold_group',
+            group_name=group_name,
+            device_id=device_id,
+            message_id=query.message.message_id
+        )
         
     else:
         # Получаем текущую температуру устройства
@@ -904,19 +930,28 @@ async def handle_set_threshold_device(query, group_name: str, device_id: str, ro
         message += "`мин макс`\n"
         message += "Например: `18 25`"
         
-        # Сохраняем контекст для обработки ввода с ID сообщения
-        temp_storage = getattr(handle_set_threshold_device, 'temp_storage', {})
-        temp_storage[query.from_user.id] = {
-            'action': 'set_threshold_device',
-            'group_name': group_name,
-            'device_id': device_id,
-            'message_id': query.message.message_id,
-            'chat_id': query.message.chat_id
-        }
-        handle_set_threshold_device.temp_storage = temp_storage
+        # Сохраняем контекст через новую систему
+        threshold_context_manager.set_context(
+            user_id=query.from_user.id,
+            chat_id=query.message.chat_id,
+            action='set_threshold_device',
+            group_name=group_name,
+            device_id=device_id,
+            message_id=query.message.message_id
+        )
+    
+    # Определяем правильную кнопку "Назад" в зависимости от контекста
+    if group_name in ['ALL', 'USER']:
+        # Для массовых операций - возврат к выбору групп
+        back_text = "🔙 Назад к группам"
+        back_callback = "settings_thresholds"
+    else:
+        # Для обычных групп - возврат к устройствам группы
+        back_text = "🔙 Назад к устройствам"
+        back_callback = f"change_threshold_{group_name}"
     
     keyboard = [[
-        InlineKeyboardButton("🔙 Назад к устройствам", callback_data=f"change_threshold_{group_name}")
+        InlineKeyboardButton(back_text, callback_data=back_callback)
     ]]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
@@ -949,6 +984,7 @@ async def handle_set_threshold_all_sensors(query, role: str):
     """Установка пороговых значений для ВСЕХ датчиков всех групп (только для big_boss)"""
     from src.core.storage import ThresholdManager
     from src.core.monitoring import get_all_groups, get_sensors_by_group
+    from src.core.threshold_context_manager import threshold_context_manager
     
     # Получаем общее количество датчиков
     all_groups = get_all_groups()
@@ -962,16 +998,15 @@ async def handle_set_threshold_all_sensors(query, role: str):
     message += f"`мин макс`\n"
     message += f"Например: `18 25`"
     
-    # Сохраняем контекст для обработки ввода с ID сообщения
-    temp_storage = getattr(handle_set_threshold_device, 'temp_storage', {})
-    temp_storage[query.from_user.id] = {
-        'action': 'set_threshold_all_sensors',
-        'group_name': 'ALL',
-        'device_id': 'ALL',
-        'message_id': query.message.message_id,
-        'chat_id': query.message.chat_id
-    }
-    handle_set_threshold_device.temp_storage = temp_storage
+    # Сохраняем контекст через новую систему
+    threshold_context_manager.set_context(
+        user_id=query.from_user.id,
+        chat_id=query.message.chat_id,
+        action='set_threshold_all_sensors',
+        group_name='ALL',
+        device_id='ALL',
+        message_id=query.message.message_id
+    )
     
     keyboard = [[
         InlineKeyboardButton("🔙 Назад к группам", callback_data="settings_thresholds")
@@ -1004,24 +1039,34 @@ async def handle_set_threshold_user_sensors(query, role: str, chat_id: int):
     message += f"`мин макс`\n"
     message += f"Например: `18 25`"
     
-    # Сохраняем контекст для обработки ввода с ID сообщения
-    temp_storage = getattr(handle_set_threshold_device, 'temp_storage', {})
-    temp_storage[query.from_user.id] = {
-        'action': 'set_threshold_user_sensors',
-        'group_name': 'USER',
-        'device_id': 'ALL',
-        'user_groups': user_groups,  # Сохраняем список доступных групп
-        'message_id': query.message.message_id,
-        'chat_id': query.message.chat_id
-    }
-    handle_set_threshold_device.temp_storage = temp_storage
+    # Сохраняем контекст для обработки ввода через новую систему
+    from src.core.threshold_context_manager import threshold_context_manager
+    
+    threshold_context_manager.set_context(
+        user_id=query.from_user.id,
+        chat_id=chat_id,
+        action='set_threshold_user_sensors', 
+        group_name='USER',
+        device_id='ALL',
+        message_id=query.message.message_id
+    )
     
     keyboard = [[
-        InlineKeyboardButton("🔙 Назад к группам", callback_data="settings_thresholds")
+        InlineKeyboardButton("🔙 Назад к группам", callback_data="settings_thresholds"),
+        InlineKeyboardButton("🏠 Главное меню", callback_data="back_to_main")
     ]]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    await safe_edit_with_keyboard(query, message, reply_markup=reply_markup)
+    await safe_edit_with_keyboard(
+        query, 
+        message, 
+        reply_markup=reply_markup,
+        menu_type="device_threshold",
+        menu_context={
+            'group_name': 'USER',
+            'device_id': 'ALL'
+        }
+    )
 
 
 async def handle_confirm_registration_new(query, callback_data: str):

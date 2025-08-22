@@ -30,6 +30,10 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     logger.info(f"Обработка команды /start для {chat_id}")
     
+    # Очищаем контекст пороговых значений при команде /start
+    from src.bot.handlers.callbacks import clear_threshold_context
+    clear_threshold_context(user.id)
+    
     try:
         # Определяем роль пользователя
         role = get_user_role(chat_id)
@@ -39,61 +43,60 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         if not admin_info or 'fio' not in admin_info:
             # Проверяем, не находится ли пользователь уже в процессе регистрации
-            from src.bot.handlers.admin import handle_user_registration
-            if hasattr(handle_user_registration, 'temp_storage'):
-                existing_context = handle_user_registration.temp_storage.get(chat_id, {})
-                if existing_context.get('registration_step'):
-                    current_step = existing_context.get('registration_step')
+            from src.bot.handlers.registration_handlers import registration_manager
+            existing_context = registration_manager.get_registration_data(chat_id) or {}
+            if existing_context.get('step'):
+                current_step = existing_context.get('step')
+                
+                if current_step == 'fio':
+                    await update.message.reply_text(
+                        "⚠️ Регистрация уже в процессе\n\n"
+                        "Введите полное ФИО в формате: Иванов Иван Иванович",
+                        parse_mode='Markdown'
+                    )
+                
+                elif current_step == 'groups':
+                    # Повторно показываем список регионов с учетом уже выбранных
+                    from src.core.monitoring import get_all_groups
+                    from src.bot.keyboards import get_registration_groups_keyboard
                     
-                    if current_step == 'fio':
-                        await update.message.reply_text(
-                            "⚠️ Регистрация уже в процессе\n\n"
-                            "Введите полное ФИО в формате: Иванов Иван Иванович",
-                            parse_mode='Markdown'
-                        )
+                    available_groups = get_all_groups()
+                    selected_groups = existing_context.get('selected_groups', [])
+                    keyboard = get_registration_groups_keyboard(available_groups, selected_groups)
                     
-                    elif current_step == 'region':
-                        # Повторно показываем список регионов с учетом уже выбранных
-                        from src.core.monitoring import get_all_groups
-                        from src.bot.keyboards import get_registration_groups_keyboard
-                        
-                        available_groups = get_all_groups()
-                        selected_groups = existing_context.get('selected_groups', [])
-                        keyboard = get_registration_groups_keyboard(available_groups, selected_groups)
-                        
-                        message_text = "⚠️ Регистрация уже в процессе\n\n"
-                        message_text += f"👤 ФИО: {existing_context.get('fio', 'Неизвестно')}\n\n"
-                        message_text += "🗺️ Выберите регион(ы):\n\n"
-                        if selected_groups:
-                            message_text += f"✅ Уже выбрано: {', '.join(selected_groups)}\n\n"
-                        message_text += "💡 Для сброса напишите: сброс"
-                        
-                        await update.message.reply_text(
-                            message_text,
-                            reply_markup=keyboard,
-                            parse_mode='Markdown'
-                        )
+                    message_text = "⚠️ Регистрация уже в процессе\n\n"
+                    message_text += f"👤 ФИО: {existing_context.get('fio', 'Неизвестно')}\n\n"
+                    message_text += "🗺️ Выберите регион(ы):\n\n"
+                    if selected_groups:
+                        message_text += f"✅ Уже выбрано: {', '.join(selected_groups)}\n\n"
+                    message_text += "💡 Для сброса напишите: сброс"
                     
-                    elif current_step == 'position':
-                        selected_groups = existing_context.get('selected_groups', [])
-                        groups_text = ', '.join(selected_groups) if selected_groups else 'Неизвестно'
-                        
-                        await update.message.reply_text(
-                            "⚠️ Регистрация уже в процессе\n\n"
-                            f"👤 ФИО: {existing_context.get('fio', 'Неизвестно')}\n"
-                            f"🗺️ Регион(ы): {groups_text}\n\n"
-                            "💼 Введите должность:",
-                            parse_mode='Markdown'
-                        )
+                    await update.message.reply_text(
+                        message_text,
+                        reply_markup=keyboard,
+                        parse_mode='Markdown'
+                    )
+                
+                elif current_step == 'position':
+                    selected_groups = existing_context.get('selected_groups', [])
+                    groups_text = ', '.join(selected_groups) if selected_groups else 'Неизвестно'
                     
-                    else:
-                        await update.message.reply_text(
-                            "⚠️ Регистрация уже в процессе\n\n"
-                            "Завершите текущий шаг регистрации.",
-                            parse_mode='Markdown'
-                        )
-                    
-                    return
+                    await update.message.reply_text(
+                        "⚠️ Регистрация уже в процессе\n\n"
+                        f"👤 ФИО: {existing_context.get('fio', 'Неизвестно')}\n"
+                        f"🗺️ Регион(ы): {groups_text}\n\n"
+                        "💼 Введите должность:",
+                        parse_mode='Markdown'
+                    )
+                
+                else:
+                    await update.message.reply_text(
+                        "⚠️ Регистрация уже в процессе\n\n"
+                        "Завершите текущий шаг регистрации.",
+                        parse_mode='Markdown'
+                    )
+                
+                return
             
             # Новый пользователь - показываем форму регистрации БЕЗ кнопки главного меню
             logger.info(f"Новый пользователь: {chat_id}")
@@ -147,6 +150,11 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     logger.info(f"Обработка команды /help для {chat_id}")
+    
+    # Очищаем контекст пороговых значений при команде /help
+    from src.bot.handlers.callbacks import clear_threshold_context
+    user = update.effective_user
+    clear_threshold_context(user.id)
     
     try:
         role = get_user_role(chat_id)

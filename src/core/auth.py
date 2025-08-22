@@ -72,12 +72,41 @@ def initialize_groups():
 
 
 def get_current_admin_groups():
-    """Возвращает актуальные группы администраторов"""
-    return ADMIN_GROUPS
+    """Возвращает актуальные группы администраторов из admins.json"""
+    try:
+        from .storage import safe_json_load, ADMINS_FILE
+        admins = safe_json_load(ADMINS_FILE, [])
+        
+        admin_groups = {}
+        for admin in admins:
+            if isinstance(admin, dict) and admin.get("role") == "admin":
+                chat_id = admin.get("chat_id")
+                groups = admin.get("groups", [])
+                if chat_id and groups:
+                    admin_groups[chat_id] = groups
+        
+        return admin_groups
+    except Exception as e:
+        logger.error(f"Ошибка получения групп администраторов: {e}")
+        return ADMIN_GROUPS  # Fallback на статичную версию
 
 def get_current_big_boss():
-    """Возвращает актуальный список big_boss"""
-    return BIG_BOSS
+    """Возвращает актуальный список big_boss из admins.json"""
+    try:
+        from .storage import safe_json_load, ADMINS_FILE
+        admins = safe_json_load(ADMINS_FILE, [])
+        
+        big_boss_list = []
+        for admin in admins:
+            if isinstance(admin, dict) and admin.get("role") == "big_boss":
+                chat_id = admin.get("chat_id")
+                if chat_id:
+                    big_boss_list.append(chat_id)
+        
+        return big_boss_list
+    except Exception as e:
+        logger.error(f"Ошибка получения списка big_boss: {e}")
+        return BIG_BOSS  # Fallback на статичную версию
 
 def get_user_role(chat_id: int) -> str:
     """

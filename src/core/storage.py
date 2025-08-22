@@ -289,6 +289,23 @@ class AdminManager:
         
         if success:
             logger.info(f"Информация об администраторе {chat_id} сохранена")
+            
+            # КРИТИЧНО: Обновляем глобальную переменную ADMIN_GROUPS в памяти
+            try:
+                import src.core.auth as auth_module
+                if groups:  # Только если переданы группы
+                    auth_module.ADMIN_GROUPS[chat_id] = groups[:]  # Копируем список
+                    logger.info(f"Обновлена глобальная переменная ADMIN_GROUPS для {chat_id}: {groups}")
+            except Exception as e:
+                logger.error(f"Ошибка обновления глобальной переменной ADMIN_GROUPS: {e}")
+            
+            # Обновляем .env файл с новыми группами администраторов
+            try:
+                from .auth import update_env_file
+                update_env_file()
+                logger.info("Файл .env обновлен после сохранения администратора")
+            except Exception as e:
+                logger.error(f"Ошибка обновления .env файла: {e}")
         else:
             logger.error(f"Ошибка сохранения информации об администраторе {chat_id}")
         

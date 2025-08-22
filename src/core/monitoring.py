@@ -5,12 +5,11 @@
 import asyncio
 import requests
 import traceback
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import List, Dict, Any, Optional
 from src.config.settings import DOGET_URL, MONITORING_INTERVAL, ALERT_COOLDOWN
 from src.config.logging import SecureLogger
 from src.utils.validators import validate_temperature, validate_device_id, validate_group_name
-from src.utils.security import validate_request_security
 from .storage import ThresholdManager
 
 logger = SecureLogger(__name__)
@@ -222,6 +221,16 @@ def get_cached_thresholds() -> Dict[str, Any]:
         logger.debug("Threshold cache updated")
     
     return threshold_cache
+
+
+def invalidate_threshold_cache():
+    """
+    Принудительно сбрасывает кеш пороговых значений
+    Используется после изменения пороговых значений для обновления статистики в реальном времени
+    """
+    global threshold_cache_time
+    threshold_cache_time = None
+    logger.debug("Threshold cache invalidated - will be refreshed on next access")
 
 
 def check_temperature_threshold(sensor: Dict[str, Any]) -> Optional[str]:
@@ -604,76 +613,6 @@ def analyze_critical_issues(critical_sensors: List[Dict[str, Any]]) -> Dict[str,
     return {k: v for k, v in critical_counts.items() if v > 0}
 
 
-def get_sensor_problem_emoji_and_description(sensor: Dict[str, Any], is_critical: bool = False) -> tuple[str, str]:
-    """
-    Возвращает подходящий эмодзи и краткое описание для проблемы датчика
-    
-    Args:
-        sensor: Данные датчика
-        is_critical: True если это критическая проблема температуры
-        
-    Returns:
-        Кортеж (эмодзи, описание)
-    """
-    if is_critical:
-        # Определяем тип критической проблемы
-        device_id = sensor.get("device_id", "")
-        group = sensor.get("group", "")
-        temperature = sensor.get("temperature")
-        
-        try:
-            temp_value = float(temperature)
-            thresholds = get_cached_thresholds()
-            
-            if group in thresholds and device_id in thresholds[group]:
-                threshold = thresholds[group][device_id]
-                min_temp = threshold.get("min")
-                max_temp = threshold.get("max")
-                
-                if max_temp is not None and temp_value > max_temp:
-                    return "🥵", f"{temperature}°C (перегрев)"
-                elif min_temp is not None and temp_value < min_temp:
-                    return "🥶", f"{temperature}°C (переохлаждение)"
-        except (ValueError, TypeError):
-            pass
-        
-        # Если не удалось определить тип - общий критический эмодзи
-        return "🔥", f"{temperature}°C (критично)"
-    
-    else:
-        # Анализируем ошибки валидации
-        errors = sensor.get('validation_errors', [])
-        if not errors:
-            return "❌", "неизвестная ошибка"
-        
-        main_error = errors[0].lower()
-        
-        # Группируем по типам ошибок с соответствующими эмодзи
-        if 'температур' in main_error:
-            return "❓", "неверная t°"
-        elif 'timestamp' in main_error and 'старше 1 дня' in main_error:
-            return "🕒", "старые данные"
-        elif 'timestamp' in main_error and 'старше 7 дней' in main_error:
-            return "🕒", "очень старые данные"
-        elif 'timestamp' in main_error:
-            return "📡", "неверный формат времени"
-        elif 'отсутствует поле' in main_error:
-            if 'temperature' in main_error:
-                return "📤", "нет данных t°"
-            elif 'timestamp' in main_error:
-                return "📤", "нет времени"
-            elif 'device_id' in main_error:
-                return "📤", "нет ID"
-            elif 'group' in main_error:
-                return "📤", "нет группы"
-            else:
-                return "📤", "нет данных"
-        elif 'некорректный id датчика' in main_error:
-            return "🔧", "некорректный ID"
-        elif 'некорректное имя группы' in main_error:
-            return "🏷️", "некорректная группа"
-        else:
-            return "❌", "прочие ошибки"
 
 
 def analyze_groups_breakdown(filtered_data: List[Dict[str, Any]], user_groups: List[str]) -> Dict[str, Dict[str, int]]:

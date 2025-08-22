@@ -37,94 +37,14 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return await InputHandler.handle_text_input(update, context)
 
 
+# УСТАРЕЛО: Алиас для совместимости - теперь используется новая система регистрации
 async def handle_user_registration(update: Update, text: str, chat_id: int):
-    """
-    Обработка многошаговой регистрации нового пользователя
-    """
-    # Используем временное хранение состояния (убираем проблемный callback_query)
-    if not hasattr(handle_user_registration, 'temp_storage'):
-        handle_user_registration.temp_storage = {}
-    context = handle_user_registration.temp_storage.get(chat_id, {})
-    registration_step = context.get('registration_step', 'fio')
-    
-    logger.info(f"Регистрация пользователя {chat_id}, шаг: {registration_step}")
-    
-    if registration_step == 'fio':
-        # Шаг 1: Ввод ФИО
-        if not validate_fio(text):
-            await update.message.reply_text(
-                "❌ **Неверный формат ФИО**\n\n"
-                "Укажите полное ФИО корректно:\n\n"
-                "📅 **Требования:**\n"
-                "• 3-5 слов (Фамилия Имя Отчество)\n"
-                "• Каждое слово от 2 до 15 символов\n"
-                "• Только буквы русского/английского алфавита\n"
-                "• Каждое слово начинается с заглавной буквы\n"
-                "• Не тестовые данные и не бессмыслица\n\n"
-                "📝 **Примеры:**\n"
-                "• Пушкин Александр Сергеевич\n"
-                "• Салтыков-Щедрин Михаил Евграфович\n"
-                "• Гюго Виктор-Мари Жозефович\n"
-                "• Толкин Джон Рональд Руэл\n"
-                "• Макиавелли Никколо Ди Бернардо Деи\n",
-                parse_mode='Markdown'
-            )
-            return
-        
-        # Сохраняем ФИО и переходим к выбору региона
-        context['fio'] = text.strip()
-        context['registration_step'] = 'region'
-        context['selected_groups'] = []  # Инициализируем список выбранных групп
-        # Сохраняем в временное хранилище
-        if not hasattr(handle_user_registration, 'temp_storage'):
-            handle_user_registration.temp_storage = {}
-        handle_user_registration.temp_storage[chat_id] = context
-        
-        # Показываем список регионов
-        await show_region_selection(update, chat_id)
-        
-    elif registration_step == 'position':
-        # Шаг 3: Ввод должности
-        if not validate_position(text):
-            await update.message.reply_text(
-                "❌ **Неверный формат должности**\n\n"
-                "📅 **Требования:**\n"
-                "• От 2 до 50 символов\n"
-                "• 1-4 осмысленных слова\n"
-                "• Только буквы, цифры, пробелы, дефисы, точки, скобки\n"
-                "• Не тестовые данные и не бессмыслица\n\n"
-                "📝 **Примеры корректных должностей:**\n"
-                "• Директор\n"
-                "• Заместитель директора\n"
-                "• Региональный руководитель\n"
-                "• Бригадир\n\n"
-                "📝 Введите должность заново:",
-                parse_mode='Markdown'
-            )
-            return
-        
-        # Проверяем валидность контекста
-        if not validate_registration_context(context, 'position'):
-            await update.message.reply_text(
-                "❌ **Ошибка в процессе регистрации**\n\n"
-                "Данные повреждены. Начните регистрацию заново с команды /start",
-                parse_mode='Markdown'
-            )
-            # Очищаем поврежденные данные
-            if hasattr(handle_user_registration, 'temp_storage'):
-                handle_user_registration.temp_storage.pop(chat_id, None)
-            return
-        
-        # Завершаем регистрацию
-        context['position'] = text.strip()
-        handle_user_registration.temp_storage[chat_id] = context
-        await complete_registration(update, chat_id, context)
-    
-    else:
-        await reply_with_keyboard(
-            update,
-            "❓ Неизвестное состояние регистрации. Начните с /start"
-        )
+    """Переадресация на новую систему регистрации"""
+    from src.bot.handlers.input_handlers import handle_registration_input
+    await handle_registration_input(update, text, chat_id)
+
+# Заглушка для обратной совместимости старых callback'ов
+handle_user_registration.temp_storage = {}
 
 
 async def handle_registration_reset(update: Update, chat_id: int):
@@ -398,20 +318,20 @@ async def handle_threshold_input(update: Update, text: str, chat_id: int) -> boo
     from src.core.auth import can_access_group
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup
     
-    # Проверяем, есть ли контекст для пороговых значений
-    temp_storage = getattr(handle_set_threshold_device, 'temp_storage', {})
-    context = temp_storage.get(chat_id)
+    # Проверяем, есть ли контекст для пороговых значений через новую систему
+    user_id = update.effective_user.id
+    context = threshold_context_manager.get_context(user_id)
     
-    logger.info(f"Проверка контекста для пороговых значений от {chat_id}: temp_storage={list(temp_storage.keys())}, context={context}")
+    logger.info(f"Проверка контекста для пороговых значений от пользователя {user_id}: context={context}")
     
     if not context:
         return False
     
-    action = context.get('action')
-    group_name = context.get('group_name')
-    device_id = context.get('device_id')
-    stored_message_id = context.get('message_id')
-    stored_chat_id = context.get('chat_id')
+    action = context.action
+    group_name = context.group_name
+    device_id = context.device_id
+    stored_message_id = context.message_id
+    stored_chat_id = context.chat_id
     
     if not action or not group_name or not stored_message_id:
         return False
@@ -432,8 +352,8 @@ async def handle_threshold_input(update: Update, text: str, chat_id: int) -> boo
             )
         except Exception as e:
             logger.error(f"Ошибка при редактировании сообщения об ошибке доступа: {e}")
-        # Очищаем контекст
-        temp_storage.pop(chat_id, None)
+        # Очищаем контекст через новую систему
+        threshold_context_manager.clear_context(user_id)
         return True
     
     # Парсим пороговые значения в формате "мин макс"
@@ -680,8 +600,8 @@ async def handle_threshold_input(update: Update, text: str, chat_id: int) -> boo
                 except Exception as e:
                     logger.error(f"Ошибка при редактировании сообщения с ошибкой: {e}")
         
-        # Очищаем контекст
-        temp_storage.pop(chat_id, None)
+        # Очищаем контекст через новую систему
+        threshold_context_manager.clear_context(user_id)
         
         logger.info(f"Пороговые значения обновлены пользователем {chat_id}: {group_name}/{device_id} = {min_temp}-{max_temp}")
         return True
@@ -699,7 +619,7 @@ async def handle_threshold_input(update: Update, text: str, chat_id: int) -> boo
             )
         except Exception as e:
             logger.error(f"Ошибка при редактировании сообщения с ошибкой ValueError: {e}")
-        temp_storage.pop(chat_id, None)
+        threshold_context_manager.clear_context(user_id)
         return True
     except Exception as e:
         logger.error(f"Ошибка обработки пороговых значений от {chat_id}: {e}")
@@ -716,7 +636,7 @@ async def handle_threshold_input(update: Update, text: str, chat_id: int) -> boo
         except Exception as e2:
             logger.error(f"Ошибка при редактировании сообщения с системной ошибкой: {e2}")
         # Очищаем контекст при ошибке
-        temp_storage.pop(chat_id, None)
+        threshold_context_manager.clear_context(user_id)
         return True
 
 
@@ -740,16 +660,16 @@ async def handle_unknown_command_in_existing_menu(update: Update, chat_id: int, 
     
     bot = update.get_bot()
     
-    # Приоритет 1: Проверяем контекст пороговых значений
-    temp_storage = getattr(handle_set_threshold_device, 'temp_storage', {})
-    threshold_context = temp_storage.get(chat_id)
+    # Приоритет 1: Проверяем контекст пороговых значений через новую систему
+    user_id = update.effective_user.id
+    threshold_context = threshold_context_manager.get_context(user_id)
     
-    if threshold_context and threshold_context.get('message_id') and threshold_context.get('chat_id'):
+    if threshold_context and threshold_context.message_id and threshold_context.chat_id:
         # Нашли активное меню пороговых значений
         try:
-            stored_message_id = threshold_context.get('message_id')
-            stored_chat_id = threshold_context.get('chat_id')
-            group_name = threshold_context.get('group_name', 'settings')
+            stored_message_id = threshold_context.message_id
+            stored_chat_id = threshold_context.chat_id
+            group_name = threshold_context.group_name
             
             # Определяем кнопку возврата
             if group_name in ['USER', 'ALL']:
@@ -993,15 +913,15 @@ async def handle_media_in_existing_menu(update: Update, chat_id: int, media_type
     
     bot = update.get_bot()
     
-    # Приоритет 1: Проверяем контекст пороговых значений
-    temp_storage = getattr(handle_set_threshold_device, 'temp_storage', {})
-    threshold_context = temp_storage.get(chat_id)
+    # Приоритет 1: Проверяем контекст пороговых значений через новую систему
+    user_id = update.effective_user.id
+    threshold_context = threshold_context_manager.get_context(user_id)
     
-    if threshold_context and threshold_context.get('message_id') and threshold_context.get('chat_id'):
+    if threshold_context and threshold_context.message_id and threshold_context.chat_id:
         try:
-            stored_message_id = threshold_context.get('message_id')
-            stored_chat_id = threshold_context.get('chat_id')
-            group_name = threshold_context.get('group_name', 'settings')
+            stored_message_id = threshold_context.message_id
+            stored_chat_id = threshold_context.chat_id
+            group_name = threshold_context.group_name
             
             # Определяем кнопку возврата
             if group_name in ['USER', 'ALL']:
@@ -1211,8 +1131,7 @@ async def handle_user_registration_with_smart_deletion(update: Update, text: str
                 sent_message = await update.get_bot().send_message(
                     chat_id=chat_id,
                     text="❌ **Неверный формат должности**\n\n"
-                         "Пожалуйста, введите должность:\n"
-                         "Примеры: `Директор`, `Заместитель директора`, `Менеджер`\n\n"
+                         "Пожалуйста, введите должность (от 2 до 50 символов)\n\n"
                          "Для отмены регистрации напишите: `сброс`",
                     parse_mode='Markdown'
                 )

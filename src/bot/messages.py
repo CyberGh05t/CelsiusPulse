@@ -7,7 +7,7 @@ from src.core.monitoring import format_timestamp
 from src.core.storage import ThresholdManager
 from src.utils.validators import sanitize_string, escape_markdown
 
-def format_sensor_message(sensor: Dict[str, Any], escape_md: bool = False) -> str:
+def format_sensor_message(sensor: Dict[str, Any], thresholds_cache: Dict[str, Any] = None, escape_md: bool = False) -> str:
     """
     Форматирует данные датчика в читаемое сообщение
     
@@ -46,34 +46,51 @@ def format_sensor_message(sensor: Dict[str, Any], escape_md: bool = False) -> st
         max_temp_value = None
         
         try:
-            threshold = ThresholdManager.get_device_threshold(raw_device_id, group)
-            if threshold:
-                min_temp_value = threshold.get('min')
-                max_temp_value = threshold.get('max')
-                min_temp_display = min_temp_value if min_temp_value is not None else 'не задан'
-                max_temp_display = max_temp_value if max_temp_value is not None else 'не задан'
-                threshold_info = f"📊 Пороги: {min_temp_display}°C — {max_temp_display}°C"
+            # ОПТИМИЗАЦИЯ: Используем переданный кеш порогов вместо загрузки из файла
+            if thresholds_cache:
+                if group in thresholds_cache and raw_device_id in thresholds_cache[group]:
+                    threshold = thresholds_cache[group][raw_device_id]
+                    min_temp_value = threshold.get('min')
+                    max_temp_value = threshold.get('max')
+                    min_temp_display = min_temp_value if min_temp_value is not None else 'не задан'
+                    max_temp_display = max_temp_value if max_temp_value is not None else 'не задан'
+                    threshold_info = f"📊 Пороги: {min_temp_display}°C — {max_temp_display}°C"
+                else:
+                    threshold_info = "📊 Пороги: не настроены"
             else:
-                threshold_info = "📊 Пороги: не настроены"
+                # Fallback: загружаем из файла (для обратной совместимости)
+                threshold = ThresholdManager.get_device_threshold(raw_device_id, group)
+                if threshold:
+                    min_temp_value = threshold.get('min')
+                    max_temp_value = threshold.get('max')
+                    min_temp_display = min_temp_value if min_temp_value is not None else 'не задан'
+                    max_temp_display = max_temp_value if max_temp_value is not None else 'не задан'
+                    threshold_info = f"📊 Пороги: {min_temp_display}°C — {max_temp_display}°C"
+                else:
+                    threshold_info = "📊 Пороги: не настроены"
         except Exception:
             threshold_info = "📊 Пороги: ошибка загрузки"
         
-        # Определяем иконку и статус валидности
+        # Определяем иконку статуса валидности
         if validation_status == "invalid":
-            status_icon = "⚠️"
-            temp_icon = "❓"
+            status_icon = "⛔️"
         else:
             status_icon = "✅"
-            # Определяем иконку на основе температуры и пороговых значений для валидных данных
-            if min_temp_value is not None and temp_value < min_temp_value:
-                temp_icon = "🥶"
-            elif max_temp_value is not None and temp_value > max_temp_value:
-                temp_icon = "🥵"
-            elif (min_temp_value is not None and max_temp_value is not None and 
-                  min_temp_value <= temp_value <= max_temp_value):
-                temp_icon = "👍"
+        
+        # Определяем иконку температуры на основе пороговых значений (для ВСЕХ датчиков)
+        if min_temp_value is not None and temp_value < min_temp_value:
+            temp_icon = "🥶"  # Переохлаждение
+        elif max_temp_value is not None and temp_value > max_temp_value:
+            temp_icon = "🥵"  # Перегрев
+        elif (min_temp_value is not None and max_temp_value is not None and 
+              min_temp_value <= temp_value <= max_temp_value):
+            temp_icon = "👍"  # В норме
+        else:
+            # Если пороги не настроены или статус невалидный
+            if validation_status == "invalid":
+                temp_icon = "❓"  # Невалидные данные без порогов
             else:
-                temp_icon = "🚨"
+                temp_icon = "🚨"  # Валидные данные без порогов
 
         message_parts = [
             f"{status_icon} {temp_icon} {escape_markdown(device_id) if escape_md else device_id}",
@@ -82,10 +99,9 @@ def format_sensor_message(sensor: Dict[str, Any], escape_md: bool = False) -> st
             f"⏰ Время: {formatted_time}"
         ]
         
-        # Добавляем предупреждения для невалидных данных
+        # Добавляем ошибки для невалидных данных без предупреждающего заголовка
         if validation_status == "invalid" and validation_errors:
             message_parts.append("")
-            message_parts.append("⚠️ ПРЕДУПРЕЖДЕНИЕ - НЕВАЛИДНЫЕ ДАННЫЕ:")
             for error in validation_errors:
                 message_parts.append(f"• {error}")
         
@@ -109,6 +125,10 @@ def format_group_sensors_message(group_name: str, sensors: List[Dict[str, Any]])
     if not sensors:
         return f"📊 **Группа: {group_name}**\n\n❌ Нет доступных данных датчиков"
     
+    # ОПТИМИЗАЦИЯ: Загружаем пороги ОДИН раз для всех датчиков
+    from src.core.storage import ThresholdManager
+    thresholds_cache = ThresholdManager.load_thresholds()
+    
     # Подсчитываем статистику по валидности данных
     valid_sensors = [s for s in sensors if s.get('validation_status') == 'valid']
     invalid_sensors = [s for s in sensors if s.get('validation_status') == 'invalid']
@@ -122,16 +142,14 @@ def format_group_sensors_message(group_name: str, sensors: List[Dict[str, Any]])
     
     # Сначала показываем валидные датчики
     for sensor in valid_sensors:
-        sensor_msg = format_sensor_message(sensor)
+        sensor_msg = format_sensor_message(sensor, thresholds_cache)
         message_parts.append(sensor_msg)
         message_parts.append("-" * 20)
     
-    # Затем показываем невалидные датчики с пометкой
+    # Затем показываем невалидные датчики без дополнительной пометки
     if invalid_sensors:
-        message_parts.append("⚠️ ДАТЧИКИ С НЕВАЛИДНЫМИ ДАННЫМИ:")
-        message_parts.append("=" * 25)
         for sensor in invalid_sensors:
-            sensor_msg = format_sensor_message(sensor)
+            sensor_msg = format_sensor_message(sensor, thresholds_cache)
             message_parts.append(sensor_msg)
             message_parts.append("-" * 20)
     
@@ -194,7 +212,6 @@ def format_alert_message(sensor: Dict[str, Any], alert_type: str, threshold_info
         Сообщение тревоги
     """
     device_id = sanitize_string(str(sensor.get("device_id", "Неизвестно")))
-    group = sanitize_string(str(sensor.get("group", "Неизвестно")))
     temperature = sensor.get("temperature", 0)
     timestamp = sensor.get("timestamp", int(datetime.now().timestamp()))
     
